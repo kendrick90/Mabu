@@ -51,26 +51,36 @@ Functional groups:
 
 USB OTG was wired to a host PC. Initial wiring failed enumeration with the
 classic "Device Descriptor Request Failed" symptom (got an address, then
-descriptor read corrupted) — root cause was likely D+/D− polarity / signal
+descriptor read corrupted) - root cause was likely D+/D- polarity / signal
 integrity. After re-wiring, the device enumerates as:
 
 ```
 USB\VID_2207&PID_0006   "H7R"
+Compatible IDs: USB\Class_FF&SubClass_42&Prot_01   <- Android ADB interface
 ```
 
-This is the **Rockchip rockusb / loader** USB function. Android is fully
-booted on the tablet — the rockusb gadget is being exposed *from running
-Android*, not because the SoC is in MaskROM. This is excellent for our
-purposes: we can talk to it with `rkdeveloptool` without needing ADB or
-recovery-key combos.
+**It is NOT the Rockchip rockusb gadget** despite using the Rockchip VID.
+Class 0xFF / SubClass 0x42 / Protocol 0x01 is Google's Android Debug
+Bridge interface signature - the OEM is exposing ADB on the chip-vendor
+VID (an unusual but legal choice). Standard `rkdeveloptool` builds reject
+PIDs with a zero high byte (verified in `RKScan.cpp` - PID 0x0006 is
+explicitly filtered out), so the Rockchip-tool path is a dead end.
+
+The right tool is **adb** with the Google Android USB driver, patched to
+include `VID_2207&PID_0006`. See `scripts\install-android-driver.ps1`.
+
+The SoC is suspected to be **RK3288** based on era (~2018) and form factor;
+this will be confirmed via `getprop ro.board.platform` once adb is up.
 
 ## Goals
 
-1. Confirm exact SoC variant (`rkdeveloptool rci`).
-2. Read the partition table (`rkdeveloptool ppt`).
-3. Dump non-userdata partitions for offline analysis.
-4. Decide whether to flash custom u-boot / kernel / rootfs, or to drive
-   the existing Android image directly.
+1. Get adb shell access (install patched Google USB driver -> `adb devices`).
+2. Read system properties to confirm SoC and Android variant.
+3. Pull useful artifacts via adb (`adb pull /proc/cpuinfo`, partition images
+   if root is available, etc.) for offline analysis.
+4. Decide whether to drive the existing Android image directly (run custom
+   APKs, control the motor controller via the existing UART) or replace
+   the firmware entirely.
 
 ## Layout
 
