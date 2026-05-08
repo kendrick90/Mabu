@@ -1,0 +1,21 @@
+# Downloaded tooling — fetched by scripts/install-tools.ps1, not committed
+tools/*
+!tools/.gitkeep
+!tools/README.md
+
+# Partition / firmware dumps — large binaries, may contain serials/keys
+dumps/*
+!dumps/.gitkeep
+!dumps/README.md
+*.img
+*.bin
+*.raw
+
+# OS / editor cruft
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
