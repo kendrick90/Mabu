@@ -127,12 +127,16 @@ class Rockusb:
         if dev is None:
             raise RockusbError(f'No rockchip device found (tried PIDs: {[hex(p) for p in pids]})')
 
-        # On Windows the kernel driver is the WinUSB binding from Zadig - we
-        # don't need to detach it; libusb on Windows talks to WinUSB directly.
-
-        # Find the vendor-specific interface (FF/FF/00).
-        cfg = dev.get_active_configuration()
+        # On Windows with a composite device where only ONE interface has
+        # WinUSB bound (via Zadig), get_active_configuration() trips on the
+        # other interfaces. Use the cached configuration descriptor instead -
+        # iter(dev) gives us the configurations without triggering an access.
         target_intf = None
+        try:
+            cfg = next(iter(dev))
+        except StopIteration:
+            raise RockusbError('No configuration on device')
+
         for intf in cfg:
             if (intf.bInterfaceClass == VENDOR_INTERFACE_CLASS and
                 intf.bInterfaceSubClass == VENDOR_INTERFACE_SUBCLASS and
@@ -155,6 +159,15 @@ class Rockusb:
                 ep_out = ep
         if not (ep_in and ep_out):
             raise RockusbError('Could not find both bulk endpoints on the FF/FF/00 interface')
+
+        # Claim the interface (libusb-on-Windows-with-WinUSB requires it,
+        # but it's a no-op against the kernel since WinUSB doesn't share).
+        try:
+            usb.util.claim_interface(dev, target_intf.bInterfaceNumber)
+        except usb.core.USBError as e:
+            # On Windows this often fails harmlessly because libusb uses
+            # the WinUSB handle directly; try to continue anyway.
+            print(f'  (claim_interface returned {e}; continuing)')
 
         return cls(dev, target_intf, ep_in, ep_out)
 
@@ -260,14 +273,18 @@ def hex_dump(data, prefix='  '):
 
 
 def cmd_probe():
+    found_any = False
     for pid in ALL_PIDS:
         d = _find(idVendor=VID, idProduct=pid)
         if d is None: continue
+        found_any = True
         print(f'Found: VID={VID:04x} PID={pid:04x}')
+        # Use cached config descriptor (iter(d)) - get_active_configuration()
+        # trips on composite devices with mixed driver bindings on Windows.
         try:
-            cfg = d.get_active_configuration()
-        except usb.core.USBError as e:
-            print(f'  Could not get configuration: {e}')
+            cfg = next(iter(d))
+        except Exception as e:
+            print(f'  Could not enumerate config: {e}')
             continue
         for intf in cfg:
             print(f'  Interface {intf.bInterfaceNumber}: '
@@ -281,7 +298,8 @@ def cmd_probe():
                       f'type={usb.util.endpoint_type(ep.bmAttributes)} '
                       f'maxPacket={ep.wMaxPacketSize}')
         return
-    print(f'No device with VID {VID:04x} found. PIDs tried: {[hex(p) for p in ALL_PIDS]}')
+    if not found_any:
+        print(f'No device with VID {VID:04x} found. PIDs tried: {[hex(p) for p in ALL_PIDS]}')
 
 
 def cmd_info():

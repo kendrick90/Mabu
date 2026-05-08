@@ -52,7 +52,27 @@ needs either a custom build or a true MaskROM PID.
 | Attempt | Result |
 |---|---|
 | `adb sideload probe-empty.zip` (empty zip, 22 bytes) | "footer is wrong verification failed" - **OTA signature verification IS enabled**. The recovery checks the 6-byte signature footer (must end with 0xff 0xff in middle bytes per AOSP `verifier.cpp`) before any content parsing. Unsigned zips will never work. |
-| **Next**: testkey-signed probe zip | TBD - testing whether the recovery's `/res/keys` includes the AOSP testkey, which would let us sign payloads with the publicly-available test private key |
+| **Pending**: testkey-signed probe zip | TBD - testing whether the recovery's `/res/keys` includes the AOSP testkey, which would let us sign payloads with the publicly-available test private key |
+
+### Investigated and ruled out: direct rockusb on MI_01
+
+Recovery composite exposes a second interface (FF/FF/00, labelled "MTP"
+in Windows Device Manager). I assumed this was Rockchip's rockusb gadget
+and built a direct WinUSB-API client (scripts/rockusb_winusb.py) to
+bypass rkdeveloptool's PID filter.
+
+The client opens the WinUSB-bound interface successfully but the device
+rejects USB Mass Storage Class Bulk Reset (control transfer returns
+ERROR_GEN_FAILURE) and bulk OUT writes time out. **MSC Bulk Reset is
+the most basic "I am MSC" handshake; rejection means MI_01 is NOT
+rockusb.** It's something else - possibly an OEM-customized MTP
+variant (the descriptor string says "MTP"), an Esper diagnostic
+channel, or an Android sideload-related protocol. Either way: not
+rockusb, so rkdeveloptool replacement is irrelevant here.
+
+The rockusb_winusb.py script is left in place for future use if we
+ever encounter true rockusb on a non-standard PID; the libusb-package
+bundling and direct-WinUSB-API code is reusable.
 
 ## What's left to try (in cost order)
 
