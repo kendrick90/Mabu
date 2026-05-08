@@ -99,60 +99,80 @@ if ($zadig) {
 }
 
 # ---------------------------------------------------------------------------
-# 2. rkdeveloptool drop-in directory
+# 2. rkdeveloptool (hash-pinned download from cpebit/rkdeveloptool-bin)
 # ---------------------------------------------------------------------------
-Write-Step 'rkdeveloptool (manual placement)'
+# Source pinned to a specific commit so the bytes we download match what
+# was reviewed when this script was authored. Hashes below are computed
+# from that commit. Re-run with -RefreshRkdev to upgrade the pin (you'll
+# need to manually update $RkdevManifest below to match the new SHA256s).
+Write-Step 'rkdeveloptool (hash-pinned download)'
+
+$RkdevRepo   = 'cpebit/rkdeveloptool-bin'
+$RkdevCommit = 'c23f0f5d04f329a1d40b42537983565698a02865'
+$RkdevManifest = @(
+    @{ Name='rkdeveloptool.exe'; Sha256='995a7409171fd1c08c3f32d802918c719433ccac328ddb7c7668d4f9cef26396' },
+    @{ Name='libusb-1.0.dll';    Sha256='d40c48048854b89b245e65c8116d95d93770fa9b9b9fb6c4ad4051dee75a719c' },
+    @{ Name='msvcp140.dll';      Sha256='6ff049b5ead1d723f64f6a3e54eb4d9a47d3c3a289d44800c6b19357e664cc78' },
+    @{ Name='vcruntime140.dll';  Sha256='833c31c5310de499d791e94d686d101eac8cc04240071de2b9d0ca37892c3f72' }
+)
 
 if (-not (Test-Path $RkDir)) { New-Item -ItemType Directory -Path $RkDir -Force | Out-Null }
 
+# Provenance README, regenerated each run.
 $readmePath = Join-Path $RkDir 'README.md'
-if (-not (Test-Path $readmePath)) {
-    @'
-# rkdeveloptool - drop the Windows binary here
+@"
+# rkdeveloptool (auto-managed by scripts\install-tools.ps1)
 
-Place `rkdeveloptool.exe` (and any DLLs it links against - typically
-`libusb-1.0.dll` / `libwinpthread-1.dll`) directly in this directory.
+Source:  https://github.com/$RkdevRepo
+Pin:     $RkdevCommit
+Files:   rkdeveloptool.exe, libusb-1.0.dll, msvcp140.dll, vcruntime140.dll
+Hashes:  see `$RkdevManifest in scripts\install-tools.ps1
 
-## Where to obtain a Windows build
+This is a third-party Windows build of upstream
+https://github.com/rockchip-linux/rkdeveloptool. The pin is fixed in
+the install script; bytes are verified against the embedded SHA-256
+manifest after download. To upgrade the pin, change `$RkdevCommit and
+the corresponding hashes in scripts\install-tools.ps1.
 
-There is no Rockchip-blessed canonical Windows build. Reasonable options,
-in rough order of trustworthiness:
+To rebuild from source instead, see option (A) in the project README.
+"@ | Set-Content -Path $readmePath -Encoding UTF8
 
-1. **Build from source yourself** under MSYS2 / mingw-w64 from upstream:
-     https://github.com/rockchip-linux/rkdeveloptool
-   This is the cleanest option if you have a build environment.
-
-2. **A community fork that publishes signed releases.** Several forks on
-   GitHub publish Windows binaries; verify the source repo is reputable
-   and prefer ones with reproducible builds and a release SHA you can pin.
-
-3. **Use the GUI alternative** - Rockchip's official `RKDevTool` (a.k.a.
-   "AndroidTool") for Windows. It bundles all dependencies. Good for
-   one-shot dumping; less scriptable than the CLI.
-
-After dropping the binary, run `scripts\install-tools.ps1` again to verify.
-
-## Notes
-
-- This directory is in `.gitignore` (the binary isn't committed).
-- `rkdeveloptool` requires WinUSB to be bound to the Rockchip device via
-  Zadig before it can open the device. See `scripts\bind-winusb.ps1`
-  (or run Zadig manually).
-'@ | Set-Content -Path $readmePath -Encoding UTF8
-    Write-OK "Wrote $readmePath"
+# Download each file (skip if already present with matching hash).
+foreach ($entry in $RkdevManifest) {
+    $local = Join-Path $RkDir $entry.Name
+    $needs = $true
+    if (Test-Path $local) {
+        $existing = (Get-FileHash -Algorithm SHA256 -Path $local).Hash.ToLower()
+        if ($existing -eq $entry.Sha256) {
+            Write-OK "$($entry.Name) already present (sha256 verified)"
+            $needs = $false
+        } else {
+            Write-Note "$($entry.Name) hash mismatch ($existing != $($entry.Sha256)); re-downloading"
+        }
+    }
+    if ($needs) {
+        $url = "https://raw.githubusercontent.com/$RkdevRepo/$RkdevCommit/bin/$($entry.Name)"
+        Write-Note "Downloading $url"
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $local -UseBasicParsing
+        } catch {
+            Write-Warn "Download failed: $_"
+            continue
+        }
+        $got = (Get-FileHash -Algorithm SHA256 -Path $local).Hash.ToLower()
+        if ($got -ne $entry.Sha256) {
+            Remove-Item $local -Force
+            Write-Warn "$($entry.Name) hash mismatch after download. Expected $($entry.Sha256), got $got. Deleted file."
+        } else {
+            Write-OK "$($entry.Name) downloaded and verified"
+        }
+    }
 }
 
 if (Test-Path $RkExe) {
-    Write-OK "Found $RkExe"
-    try {
-        $ver = & $RkExe -v 2>&1 | Select-Object -First 1
-        Write-OK "Reports: $ver"
-    } catch {
-        Write-Warn "rkdeveloptool.exe present but failed to run: $_"
-    }
+    Write-OK "rkdeveloptool.exe in place at $RkExe"
 } else {
-    Write-Note "rkdeveloptool.exe not yet placed. See $readmePath for instructions."
-    Write-Note "Expected location: $RkExe"
+    Write-Warn "rkdeveloptool.exe is missing. Check the download errors above."
 }
 
 # ---------------------------------------------------------------------------
@@ -184,11 +204,10 @@ Write-Step 'Next step'
 if (-not $zadig) {
     Write-Host '  Install Zadig (see notes above).' -ForegroundColor White
 } elseif (-not (Test-Path $RkExe)) {
-    Write-Host '  1. Run scripts\bind-winusb.ps1 to bind WinUSB to the rockusb device.' -ForegroundColor White
-    Write-Host '  2. Drop rkdeveloptool.exe into tools\rkdeveloptool\ (see its README).' -ForegroundColor White
-    Write-Host '  3. Re-run this script to verify.' -ForegroundColor White
+    Write-Host '  rkdeveloptool.exe missing - check download errors above and re-run.' -ForegroundColor White
 } else {
-    Write-Host '  Try:  tools\rkdeveloptool\rkdeveloptool.exe ld' -ForegroundColor White
-    Write-Host '  Then: tools\rkdeveloptool\rkdeveloptool.exe rci    (read chip info)' -ForegroundColor White
-    Write-Host '  Then: tools\rkdeveloptool\rkdeveloptool.exe ppt    (print partition table)' -ForegroundColor White
+    Write-Host '  1. Run scripts\bind-winusb.ps1 to bind WinUSB to the rockusb device.' -ForegroundColor White
+    Write-Host '  2. Try:  tools\rkdeveloptool\rkdeveloptool.exe ld' -ForegroundColor White
+    Write-Host '  3. Then: tools\rkdeveloptool\rkdeveloptool.exe rci    (read chip info)' -ForegroundColor White
+    Write-Host '  4. Then: tools\rkdeveloptool\rkdeveloptool.exe ppt    (print partition table)' -ForegroundColor White
 }
