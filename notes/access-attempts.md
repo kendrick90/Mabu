@@ -74,28 +74,33 @@ The rockusb_winusb.py script is left in place for future use if we
 ever encounter true rockusb on a non-standard PID; the libusb-package
 bundling and direct-WinUSB-API code is reusable.
 
-## What's left to try (in cost order)
+## Strategic decision: committing to MaskROM
 
-1. **USB host mode + USB keyboard in recovery**
-   - Boot to recovery (proven path)
-   - Disconnect D+/D- from PC, ground OTG_ID, connect USB keyboard via OTG_DP/OTG_DM/VCCUSB
-   - Navigate menu with arrow keys, select "Apply update from ADB"
-   - Reconnect to PC, sideload a payload that adds our adb key to /data/misc/adb/adb_keys
+Build is Android 8.1.0 with September 5, 2018 security patch. That's
+late enough that production signing was almost certainly done properly
+(testkey unlikely to be in /res/keys). Sideload-with-testkey was the
+last cheap software gambit, and it's:
 
-2. **MaskROM via PCB pad short**
-   - Need photo of PCB (top + bottom, RF shield is in the way)
-   - Identify eMMC CLK or D0 ball, short to GND during power-on
-   - SoC falls through to USB loader mode with chip-specific PID
-   - Custom rkdeveloptool or rockusb client to read/write eMMC offline
+  - Probably going to fail anyway (low odds of testkey acceptance on
+    a serious Esper-managed fleet build)
+  - Painful to even test (resistor-fiddle navigation to reach sideload)
 
-3. **Compile custom rkdeveloptool** that accepts PID 0x0006 / 0x0011
-   - Recovery's "MTP" interface at FF/FF/00 might already be the rockusb gadget
-   - If so, this gives us partition read/write without needing MaskROM
-   - Effort: rebuild upstream source with patched DefineHeader.h
+MaskROM gives us a guaranteed path: hardware-level USB loader, no
+software policy can block it, gives full eMMC R/W. See `maskrom-plan.md`
+for the staged tools and workflow.
 
-4. **Find SoC debug UART**
-   - Header's UART is the motor-controller link, not console
-   - Real SoC debug UART probably on PCB test pads, possibly under shield
+**Single unblocking step**: PCB photo top + bottom -> identify eMMC
+chip + MaskROM trigger pad -> short pad during power-on -> RKDevTool
+sees the device -> dump userdata, edit adb_keys, write back -> reboot
+to authorized adb forever.
+
+Tools/rockchip-stock/ contains:
+
+  - DriverAssitant_v5.0 (rockusb.sys kernel driver)
+  - RKDevTool_Release_v2.92 (Rockchip GUI tool)
+
+Both downloaded hash-pinned from dl.radxa.com (Radxa's mirror is the
+canonical Rockchip-tool distribution point).
 
 ## Constraints / lessons
 
