@@ -44,7 +44,15 @@ needs either a custom build or a true MaskROM PID.
 | Attempt | Result |
 |---|---|
 | ADKEY shorted to GND + power-on | **Boots to recovery!** "No command" / Android-with-warning idle screen |
-| Trying to invoke recovery menu (Vol Up + Power) from "No command" | Couldn't generate distinct ADKEY resistance values for menu navigation - direct short = lowest button only |
+| Trying to invoke recovery menu (Vol Up + Power) from "No command" | First attempt: couldn't generate distinct ADKEY resistance values; resolved with 220 Ohm + 680 Ohm resistors as Vol Up / Vol Down |
+| Recovery menu navigation with 220 Ohm + 680 Ohm + PWRON pulse | **Works!** Selected "Apply update from ADB", reached sideload mode (`adb devices` shows `sideload` instead of `unauthorized`) |
+
+### Sideload findings
+
+| Attempt | Result |
+|---|---|
+| `adb sideload probe-empty.zip` (empty zip, 22 bytes) | "footer is wrong verification failed" - **OTA signature verification IS enabled**. The recovery checks the 6-byte signature footer (must end with 0xff 0xff in middle bytes per AOSP `verifier.cpp`) before any content parsing. Unsigned zips will never work. |
+| **Next**: testkey-signed probe zip | TBD - testing whether the recovery's `/res/keys` includes the AOSP testkey, which would let us sign payloads with the publicly-available test private key |
 
 ## What's left to try (in cost order)
 
