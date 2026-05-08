@@ -2,7 +2,7 @@
 #
 # Helper for the Zadig step: launches Zadig and tells you exactly which
 # device to pick and which driver to replace it with. Driver replacement
-# is intentionally interactive — Windows treats it as a security-sensitive
+# is intentionally interactive - Windows treats it as a security-sensitive
 # operation, and so do we.
 #
 # What you'll do in Zadig once it opens:
@@ -73,6 +73,6 @@ Write-Host '  4. Target driver: WinUSB' -ForegroundColor White
 Write-Host '  5. Click "Replace Driver" (or "Install Driver")' -ForegroundColor White
 Write-Host ''
 Write-Host 'When done, close Zadig and run:  scripts\install-tools.ps1' -ForegroundColor White
-Write-Host '(or just check Device Manager — the device class should change).' -ForegroundColor White
+Write-Host '(or just check Device Manager - the device class should change).' -ForegroundColor White
 
 Start-Process $zadig

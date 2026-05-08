@@ -40,7 +40,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $RkExe    = Join-Path $RepoRoot 'tools\rkdeveloptool\rkdeveloptool.exe'
 $DumpDir  = Join-Path $RepoRoot 'dumps'
 
-# Always-skip list — append to whatever the user passes via -Skip.
+# Always-skip list - append to whatever the user passes via -Skip.
 $DefaultSkip = @('userdata','cache','metadata','frp','persist','misc','baseparameter')
 if (-not $IncludeUserdata) { $Skip = @($Skip) + $DefaultSkip | Sort-Object -Unique }
 
@@ -189,7 +189,7 @@ Write-Host ("Skipping:      {0}" -f ($Skip -join ', ')) -ForegroundColor DarkGra
 
 if ($DryRun) {
     Write-Host ''
-    Write-Host 'Dry run — exiting without reading.' -ForegroundColor Yellow
+    Write-Host 'Dry run - exiting without reading.' -ForegroundColor Yellow
     exit 0
 }
 

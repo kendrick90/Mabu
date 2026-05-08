@@ -7,7 +7,7 @@
 #   1. Installs Zadig (used to replace the default Windows driver on the
 #      rockusb device with WinUSB, so libusb-based tools can open it).
 #   2. Sets up tools\rkdeveloptool\ as a drop-in location for the
-#      rkdeveloptool CLI binary (manual download — see notes below).
+#      rkdeveloptool CLI binary (manual download - see notes below).
 #   3. Verifies whatever is in place.
 #
 # What this does NOT do:
@@ -108,9 +108,9 @@ if (-not (Test-Path $RkDir)) { New-Item -ItemType Directory -Path $RkDir -Force 
 $readmePath = Join-Path $RkDir 'README.md'
 if (-not (Test-Path $readmePath)) {
     @'
-# rkdeveloptool — drop the Windows binary here
+# rkdeveloptool - drop the Windows binary here
 
-Place `rkdeveloptool.exe` (and any DLLs it links against — typically
+Place `rkdeveloptool.exe` (and any DLLs it links against - typically
 `libusb-1.0.dll` / `libwinpthread-1.dll`) directly in this directory.
 
 ## Where to obtain a Windows build
@@ -126,7 +126,7 @@ in rough order of trustworthiness:
    GitHub publish Windows binaries; verify the source repo is reputable
    and prefer ones with reproducible builds and a release SHA you can pin.
 
-3. **Use the GUI alternative** — Rockchip's official `RKDevTool` (a.k.a.
+3. **Use the GUI alternative** - Rockchip's official `RKDevTool` (a.k.a.
    "AndroidTool") for Windows. It bundles all dependencies. Good for
    one-shot dumping; less scriptable than the CLI.
 
@@ -170,12 +170,12 @@ if (-not $rk) {
 
         # If it's still bound to a Microsoft USB driver (Class=USBDevice/USB), Zadig hasn't run yet.
         if ($d.Class -in @('USB','USBDevice','Unknown') -or -not $d.Class) {
-            Write-Note 'Driver looks like the default Windows USB stack — libusb-based tools will fail to open the device.'
+            Write-Note 'Driver looks like the default Windows USB stack - libusb-based tools will fail to open the device.'
             Write-Note 'Run Zadig and replace the driver for this device with WinUSB. See scripts\bind-winusb.ps1.'
         } elseif ($d.Class -eq 'libusb-win32 devices' -or $d.Class -match 'WinUSB') {
-            Write-OK 'Driver looks like a libusb/WinUSB binding — rkdeveloptool should be able to open it.'
+            Write-OK 'Driver looks like a libusb/WinUSB binding - rkdeveloptool should be able to open it.'
         } else {
-            Write-Note "Driver class is '$($d.Class)' — not sure if libusb can open this; try rkdeveloptool ld and see."
+            Write-Note "Driver class is '$($d.Class)' - not sure if libusb can open this; try rkdeveloptool ld and see."
         }
     }
 }
