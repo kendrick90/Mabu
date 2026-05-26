@@ -61,6 +61,35 @@ and adbd's auth_required is 0 (our patch), so on every boot you can
 and without an approval dialog. The tablet IP is DHCP — set a static
 lease for it on your router if you want a stable address.
 
+## Two distinct Mabu-unit states we've seen
+
+There are two starting states for a Mabu unit, and they need slightly
+different treatment:
+
+**A) Active Esper-managed (kiosk visible, Esper backend tried to run):**
+  - /data/system/device_policies.xml contains both the Device Owner ref
+    AND kiosk policies (lock task, app whitelist, etc.)
+  - Even with Esper APKs corrupted, DPM tries to enforce those policies
+  - To get a usable tablet you MUST wipe /data (we did 256-320 MB of
+    Loader-side zeroing on the first unit). Dev Options may regress
+    due to vold's incomplete reformat.
+
+**B) Factory-reset Esper-managed (no kiosk shown, but DO still set):**
+  - /data is clean: kiosk policies wiped by factory reset
+  - The Device Owner reference persists across factory reset (FRP-like)
+    but with no policies attached, it doesn't enforce anything
+  - Esper APK corruption + adbd patches alone is enough — NO /data wipe
+  - Dev Options works on-device UI (because /data is in pristine
+    factory-reset state)
+  - USB ADB still wedges (Esper's stale DPM service keeps trying to
+    reach the dead admin) -- USE WIFI ADB instead
+
+For both states, the v2 liberate-mabu.ps1 (parameter + adbd patches)
+gives you ADB. WiFi ADB is the most reliable transport on either, since
+TCP isn't subject to whatever USB-layer game the lingering Esper code
+plays. State (B) is essentially done once liberate-mabu has run plus
+Esper APK EOCDs are nuked.
+
 ## V2 Liberation procedure (for the NEXT Mabu unit)
 
 Critical insight: **don't wipe /data, don't corrupt Esper APKs until
