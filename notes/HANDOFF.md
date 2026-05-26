@@ -90,7 +90,57 @@ TCP isn't subject to whatever USB-layer game the lingering Esper code
 plays. State (B) is essentially done once liberate-mabu has run plus
 Esper APK EOCDs are nuked.
 
-## V2 Liberation procedure (for the NEXT Mabu unit)
+## V3 Liberation procedure (current best-practice, validated)
+
+Wipe size matters. Two passes on first unit (256 + 320 MB) left Dev
+Options crashing. The second unit (96 MB before Loader wedged) ended up
+with a fully working Dev Options + cleared Device Owner. So aim small.
+
+Full procedure for a NEXT Mabu unit (do these steps in order):
+
+1. **Catch Loader** (PID 0x320A on power-on, hold the recovery button
+   if the boot is too fast). USB connected.
+
+2. **Apply core patches:**
+     .\scripts\liberate-mabu.ps1
+   This writes the parameter file (verity off + selinux permissive) and
+   the two adbd patches (auth_required = 0 and adbd_auth_init -> BX LR).
+
+3. **BACK UP MABU SOFTWARE if this is an unwiped unit:**
+     .\tools\rkdeveloptool\rkdeveloptool.exe rd     # reboot to Android
+     # wait for boot
+     adb shell tar cf /sdcard/mabu-backup.tar \
+       /data/data/com.catalia.* /data/app/com.catalia.* \
+       /data/misc/sounds 2>/dev/null
+     adb pull /sdcard/mabu-backup.tar ./mabu-<serial>-backup.tar
+   If pm list shows no com.catalia.*, the unit was already factory-reset
+   and Mabu is gone -- skip this step. USB ADB may go offline ~5s after
+   boot (Esper DPM ghost); use WiFi ADB ('adb connect <ip>:5555') if so.
+
+4. **Catch Loader again** (power-cycle and re-catch).
+
+5. **Corrupt Esper APK EOCDs** (kills Esper's three packages):
+     wl 1851238 dumps/espersupervisor-apk-eocd-patched.bin
+     wl 1981802 dumps/esperdpc-apk-eocd-patched.bin
+     wl 2063565 dumps/esperhelper-apk-eocd-patched.bin
+
+6. **Wipe ~96 MB of /data** (clears Device Owner reference, triggers
+   fresh vold reformat without breaking Dev Options):
+     .\scripts\wipe-data-head.ps1 -SizeMB 96 -Reset
+
+7. **Wait for boot.** First boot reformats /data, takes ~30-60s longer
+   than usual. 'adb devices' should show 'device' immediately. USB
+   transport now stable (Esper DPM ghost gone).
+
+8. **Install a launcher** (none on stock /system):
+     adb install apks/F-Droid.apk
+     adb install apks/KISS.apk
+     adb shell cmd package set-home-activity fr.neamar.kiss/.MainActivity
+     adb shell am start -a android.intent.action.MAIN -c android.intent.category.HOME
+   From the tablet UI you can now install anything else (browser, etc)
+   via F-Droid.
+
+## Original V2 procedure (for reference)
 
 Critical insight: **don't wipe /data, don't corrupt Esper APKs until
 AFTER you have the Mabu software backed up.** The original procedure
