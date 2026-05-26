@@ -19,3 +19,11 @@ desktop.ini
 .idea/
 *.swp
 *~
+
+# Python
+__pycache__/
+*.pyc
+
+# session logs / scratch dumps
+log/
+dumps-tablet-reset/probe-*.zip
