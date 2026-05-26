@@ -1,8 +1,51 @@
 # Mabu/Esper tablet unlock — agent handoff
 
 Long-running project. Goal: **remove Esper Device Owner kiosk from an
-RK3288 Android 8.1 tablet** so the user can repurpose it. We've made
-significant progress; one final step is blocked.
+RK3288 Android 8.1 tablet** so the user can repurpose it.
+
+## Latest status (2026-05-25 session 2)
+
+**Esper kiosk neutralized.** Device now boots to normal Android home
+screen (no Esper UI, no kiosk lock). What worked:
+
+1. dm-verity disabled via parameter file patch (from session 1)
+2. Located all three Esper APKs on /system/app via ext4 walking
+   (espersupervisor inode 441, esperdpc inode 475, esperhelper inode 518)
+3. Corrupted the EOCD signature (`PK\x05\x06` → `\x00\x00\x00\x00`) of
+   each APK's zip via single-sector writes (4 bytes each, see
+   `scripts/find-eocd.py` / dumps/*-apk-eocd-patched.bin). PackageManager
+   skips these on next scan.
+4. Wiped userdata partition head (first 256 MB) via Loader — forced vold
+   to reformat /data. Original 16 MB snapshot preserved at
+   dumps/userdata-original-head.bin in case revert needed.
+5. After reset, USB enumerated as PID 0x0011 (standard Rockchip MTP+ADB,
+   was 0x0006 under Esper). Home screen visible, no kiosk.
+
+**Still broken:**
+- Settings app crashes on launch ("Settings keeps stopping")
+- ADB shows `unauthorized`; the "Allow USB debugging?" auth dialog never
+  appears on the tablet screen (likely SystemUI's UsbDebuggingActivity
+  has the same /data init issue as Settings)
+- Suspect: more /data still needs to be wiped to force a fully clean
+  reformat. 1 GB wipe is the next attempt.
+
+**Useful infrastructure built this session:**
+- `scripts/dump-range.ps1` — range-aware partition dump with per-chunk
+  timeout (kills wedged Loader sessions in 45s instead of hanging)
+- `scripts/find-prop-default.py` — walks ext4 using inode tables
+  (flex_bg packs all 16 inode tables in first ~34 MB of /system; we have
+  them all in system.img) to locate any /system/etc/* file
+- `scripts/find-esper.py` — lists /system/app and /system/priv-app
+- `scripts/patch-prop-sector.py` — built ro.adb.secure=0 sector write
+  (took effect on disk; doesn't help at runtime because adbd reads
+  ro.adb.secure once at startup and the prop is being set to 1 earlier
+  by some other source)
+
+---
+
+## Original session notes follow
+
+We've made significant progress; one final step is blocked.
 
 ---
 
