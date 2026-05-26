@@ -41,6 +41,12 @@ this build). Main Settings menu and other subpages work fine. Avoid
 tapping Developer Options on the tablet UI; use ADB for any settings
 work that would have lived there.
 
+**WiFi ADB is on.** `service.adb.tcp.port=5555` is in /vendor/build.prop
+and adbd's auth_required is 0 (our patch), so on every boot you can
+`adb connect <tablet-ip>:5555` from any host on the LAN without USB
+and without an approval dialog. The tablet IP is DHCP — set a static
+lease for it on your router if you want a stable address.
+
 ## V2 Liberation procedure (for the NEXT Mabu unit)
 
 Critical insight: **don't wipe /data, don't corrupt Esper APKs until
