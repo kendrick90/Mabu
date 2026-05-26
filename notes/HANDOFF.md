@@ -106,16 +106,50 @@ Full procedure for a NEXT Mabu unit (do these steps in order):
    This writes the parameter file (verity off + selinux permissive) and
    the two adbd patches (auth_required = 0 and adbd_auth_init -> BX LR).
 
-3. **BACK UP MABU SOFTWARE if this is an unwiped unit:**
-     .\tools\rkdeveloptool\rkdeveloptool.exe rd     # reboot to Android
-     # wait for boot
-     adb shell tar cf /sdcard/mabu-backup.tar \
-       /data/data/com.catalia.* /data/app/com.catalia.* \
-       /data/misc/sounds 2>/dev/null
-     adb pull /sdcard/mabu-backup.tar ./mabu-<serial>-backup.tar
-   If pm list shows no com.catalia.*, the unit was already factory-reset
-   and Mabu is gone -- skip this step. USB ADB may go offline ~5s after
-   boot (Esper DPM ghost); use WiFi ADB ('adb connect <ip>:5555') if so.
+3. **BACK UP MABU SOFTWARE if this is an unwiped (Esper-active) unit.**
+   This is the hardest step. Esper actively wedges USB ADB within ~5
+   seconds of boot, so you have a narrow window. Three strategies, in
+   ascending complexity, try in order:
+
+   3a. **Race against the wedge.** After 'rkdeveloptool rd', the device
+       boots in ~30s. As soon as 'adb devices' shows 'device', fire one
+       compound command:
+
+         adb -s <serial> shell "
+           am force-stop io.shoonya.shoonyadpc;
+           am force-stop io.shoonya.shoonyahelper;
+           am force-stop io.shoonya.shoonyasupervisor;
+           pm disable-user --user 0 io.shoonya.shoonyadpc;
+           pm disable-user --user 0 io.shoonya.shoonyahelper;
+           pm disable-user --user 0 io.shoonya.shoonyasupervisor;
+           tar cf /sdcard/mabu.tar /data/data/com.catalia.* /data/app/com.catalia.* 2>/dev/null;
+           ls -la /sdcard/mabu.tar
+         "
+         adb -s <serial> pull /sdcard/mabu.tar ./mabu-<serial>.tar
+
+       The pm disable-user calls might fail if Esper has anti-disable
+       restrictions, but force-stop usually wins long enough for the
+       tar. If USB drops mid-pull, retry from the next strategy.
+
+   3b. **WiFi ADB.** Esper-managed Mabus had to be provisioned via
+       network, so WiFi credentials are persisted in /data and auto-
+       connect at boot. Find the tablet's IP (router DHCP table, or
+       'nmap -p 5555 192.168.x.0/24'), then:
+         adb connect <ip>:5555
+       service.adb.tcp.port=5555 is set in /vendor/build.prop and our
+       adbd-patched binary listens on 5555 from boot. WiFi transport
+       isn't subject to Esper's USB shenanigans (proven on second unit).
+
+   3c. **Selective Esper neutralization first.** Before extracting Mabu,
+       go back to Loader and corrupt JUST esperhelper.apk EOCD (LBA
+       2063565). Theory: 'helper' is the USB sentry. With it dead and
+       esperdpc + espersupervisor still alive, the kiosk UI keeps Mabu
+       accessible but USB ADB stays stable. UNTESTED -- the next fresh
+       Mabu is the validation opportunity.
+
+   If 'pm list packages | grep -i catalia' returns empty: the unit
+   was already factory-reset, Mabu app is gone, skip this step
+   entirely.
 
 4. **Catch Loader again** (power-cycle and re-catch).
 
