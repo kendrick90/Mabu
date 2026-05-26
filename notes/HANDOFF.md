@@ -90,6 +90,24 @@ TCP isn't subject to whatever USB-layer game the lingering Esper code
 plays. State (B) is essentially done once liberate-mabu has run plus
 Esper APK EOCDs are nuked.
 
+## Operational reality
+
+Deployed Mabu tablets have **NO external USB port and NO buttons** —
+they're embedded in the robot body. USB access requires a special
+internal-header harness that:
+  - We have only ONE of
+  - Blocks the rest of the robot from operating while connected
+  - Is therefore a one-shot-per-unit liberation opportunity
+
+This reframes the goal: the deliverable is a tablet with **persistent
+wireless ADB** (`service.adb.tcp.port=5555` already in vendor build.prop,
+just need an adbd that doesn't require auth + WiFi credentials on
+/data). Once that's live we close the device up and never need the
+harness again on that unit.
+
+The 1-step-patcher we want to build is: harness-on, run one command,
+harness-off, done. See tasks #9-#12.
+
 ## V3 Liberation procedure (current best-practice, validated)
 
 Wipe size matters. Two passes on first unit (256 + 320 MB) left Dev
