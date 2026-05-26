@@ -36,10 +36,24 @@ no host-key approval needed.
 
 **Settings.apk crash explained:** narrowed to Developer Options sub-page
 only. `DevelopmentSettings.onResume() -> SystemProperties.set(...)` fails
-with "failed to set system property" (probably restricted property on
-this build). Main Settings menu and other subpages work fine. Avoid
-tapping Developer Options on the tablet UI; use ADB for any settings
-work that would have lived there.
+because SELinux denies system_app write to `logpersistd_logging_prop`.
+Settings doesn't handle the failure -> uncaught RuntimeException.
+
+We tried patching `/system/etc/selinux/plat_property_contexts` to change
+the type to `log_prop` (sectors at abs LBA 2076322 and 2076324). It had
+no effect because **Android 8.1 uses the precompiled binary policy at
+`/vendor/etc/selinux/precompiled_sepolicy`** at runtime, not the text
+file. The text file is just one of several inputs compiled into the
+binary at build time. Patches reverted; left as a finding for future
+attempts. To actually fix this you'd need to either:
+  - Patch the precompiled binary (CIL/SEPolicy blob — fragile)
+  - Patch Settings.apk's classes.dex to skip setLogpersistOff
+  - Install a third-party Activity Launcher app to bypass the crashing
+    sub-page
+
+Practical answer: avoid the Dev Options sub-page on the tablet UI; use
+ADB shell for everything Dev Options would do (logcat config, animation
+scale, USB tethering, etc.).
 
 **WiFi ADB is on.** `service.adb.tcp.port=5555` is in /vendor/build.prop
 and adbd's auth_required is 0 (our patch), so on every boot you can
