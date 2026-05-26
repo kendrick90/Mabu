@@ -31,9 +31,19 @@ import argparse, hashlib, json, os, struct, sys, time
 
 try:
     import usb.core, usb.util
+    import usb.backend.libusb1
 except ImportError:
     print('install pyusb:  pip install pyusb libusb-package', file=sys.stderr)
     sys.exit(1)
+
+# On Windows the system libusb DLL is usually missing; use the one
+# bundled in the libusb-package wheel.
+_BACKEND = None
+try:
+    import libusb_package
+    _BACKEND = usb.backend.libusb1.get_backend(find_library=libusb_package.find_library)
+except Exception:
+    pass
 
 # Layout from parameter file (see HANDOFF.md / scripts/catch-loader-and-dump.ps1)
 PARTITIONS = [
@@ -63,7 +73,7 @@ USB_BULK_TIMEOUT_MS = 30000
 
 def find_loader():
     for pid in LOADER_PIDS:
-        dev = usb.core.find(idVendor=VID, idProduct=pid)
+        dev = usb.core.find(idVendor=VID, idProduct=pid, backend=_BACKEND)
         if dev is None: continue
         return dev, pid
     return None, None
@@ -115,11 +125,15 @@ class Rockusb:
     def _cbw(self, opcode, data_xfer_len, data_in, params_be):
         self._tag = (self._tag + 1) & 0xFFFFFFFF
         flags = 0x80 if data_in else 0x00
-        cbwcb = (bytes([opcode]) + params_be).ljust(16, b'\x00')[:16]
-        cbw = struct.pack('<4sIIBBB',
-                          b'USBC', self._tag, data_xfer_len, flags, 0, len(cbwcb)) + cbwcb
-        # Pad to 31 bytes
-        cbw = cbw.ljust(31, b'\x00')
+        meaningful = bytes([opcode]) + params_be
+        if len(meaningful) > 16:
+            raise RuntimeError(f'CBWCB too long: {len(meaningful)} bytes')
+        cmd_len = len(meaningful)   # Rockchip wants the meaningful byte count, not padded
+        cbwcb = meaningful.ljust(16, b'\x00')
+        cbw = struct.pack('<IIIBBB',
+                          0x43425355, self._tag, data_xfer_len, flags, 0, cmd_len) + cbwcb
+        if len(cbw) != 31:
+            raise RuntimeError(f'CBW size wrong: {len(cbw)}')
         self.ep_out.write(cbw, timeout=USB_BULK_TIMEOUT_MS)
         return self._tag
 
@@ -136,22 +150,18 @@ class Rockusb:
         """Read up to 65535 sectors in one CBW."""
         if sector_count > 65535:
             raise ValueError('rockusb ReadLBA limited to 65535 sectors per CBW')
-        # CBWCB: opcode 0x14 + reserved + 4-byte big-endian start + 2-byte big-endian count
-        params = b'\x00' + struct.pack('>IH', start_lba, sector_count) + b'\x00' * 9
-        params = params[:15]
+        # CBWCB layout (matches rkdeveloptool): opcode + 4-byte BE start + 2-byte BE count + 2-byte pad
+        params = struct.pack('>IH', start_lba, sector_count) + b'\x00\x00'
         nbytes = sector_count * 512
         tag = self._cbw(0x14, nbytes, True, params)
-        # Read data in chunks (pyusb returns array.array of given size limit)
-        buf = bytearray()
-        remaining = nbytes
-        while remaining > 0:
-            chunk = bytes(self.ep_in.read(min(remaining, 65536 * 4), timeout=USB_BULK_TIMEOUT_MS))
-            buf.extend(chunk)
-            remaining -= len(chunk)
+        # Single bulk read of the full data phase -- matches working rockusb.py pattern.
+        data = bytes(self.ep_in.read(nbytes, timeout=USB_BULK_TIMEOUT_MS))
         residue, status = self._csw(tag)
         if status != 0:
             raise RuntimeError(f'ReadLBA failed status={status} residue={residue}')
-        return bytes(buf)
+        if len(data) != nbytes:
+            raise RuntimeError(f'ReadLBA short: got {len(data)} expected {nbytes}')
+        return data
 
 def dump_partition(rk, name, start_lba, sector_count, out_path, block_mb, resume):
     block_sectors = (block_mb * 1024 * 1024) // 512

@@ -82,7 +82,7 @@ VID = 0x2207
 #   0x0011  recovery rockusb gadget    (this Mabu)
 #   0x0010, 0x0017, ...  sideload, fastboot, etc.
 #   chip-specific 0x310B, 0x320A, etc. for true MaskROM
-ALL_PIDS = [0x0006, 0x0010, 0x0011, 0x0017, 0x0019]
+ALL_PIDS = [0x0006, 0x0010, 0x0011, 0x0017, 0x0019, 0x320a]
 
 VENDOR_INTERFACE_CLASS = 0xff
 VENDOR_INTERFACE_SUBCLASS = 0xff
@@ -137,15 +137,16 @@ class Rockusb:
         except StopIteration:
             raise RockusbError('No configuration on device')
 
+        # Accept any vendor-specific interface (class 0xFF). PID 0x0011 has
+        # FF/FF/00 (true rockusb); PID 0x320A Loader has FF/06/05 (different
+        # subclass but same CBW-based protocol with Rockchip opcodes).
         for intf in cfg:
-            if (intf.bInterfaceClass == VENDOR_INTERFACE_CLASS and
-                intf.bInterfaceSubClass == VENDOR_INTERFACE_SUBCLASS and
-                intf.bInterfaceProtocol == VENDOR_INTERFACE_PROTOCOL):
+            if intf.bInterfaceClass == VENDOR_INTERFACE_CLASS:
                 target_intf = intf
                 break
         if target_intf is None:
             raise RockusbError(
-                f'No FF/FF/00 interface on device VID={vid:04x} PID={dev.idProduct:04x}. '
+                f'No vendor-class (0xFF) interface on device VID={vid:04x} PID={dev.idProduct:04x}. '
                 f'Interfaces present: ' + ', '.join(
                     f'{i.bInterfaceClass:02x}/{i.bInterfaceSubClass:02x}/{i.bInterfaceProtocol:02x}'
                     for i in cfg)

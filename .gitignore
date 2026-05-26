@@ -27,3 +27,7 @@ __pycache__/
 # session logs / scratch dumps
 log/
 dumps-tablet-reset/probe-*.zip
+
+# per-unit backups (large, potentially sensitive) — kept locally only
+backups/
+backups-test/

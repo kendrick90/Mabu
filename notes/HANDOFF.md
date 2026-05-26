@@ -90,6 +90,75 @@ TCP isn't subject to whatever USB-layer game the lingering Esper code
 plays. State (B) is essentially done once liberate-mabu has run plus
 Esper APK EOCDs are nuked.
 
+## Open problem: full-device backup procedure
+
+The session 3 priority became "back up every Mabu before doing anything
+destructive." We did NOT solve this. State of the question:
+
+**Symptoms observed:**
+- cpebit's rkdeveloptool `rl` works for chunks up to ~4 MB. Larger
+  chunks (8/16/32/64 MB single reads) fail outright -- not just slow,
+  the device returns "Read LBA failed" or hangs.
+- Cumulative chunk reads in one Loader session seem to wedge somewhere
+  past 30-100 MB (varied across attempts). Once wedged, even small
+  reads return "creating comm object failed" until power-cycle.
+- We don't know if the wedge is a Loader-side state-leak (the firmware
+  on Rockchip can't handle many CBWs in one session) or a cpebit-tool
+  bug (libusb context per `rl` invocation -> handle accumulation in
+  the device endpoint).
+- pyusb-based attempt (scripts/dump-all.py) hits libusb "Pipe error"
+  on the first CBW write -- the OUT endpoint stalls. Tried matching
+  byte-for-byte against the supposedly-working rockusb.py and still
+  stalls. Some Windows + WinUSB-bound + Rockchip-FF/06/05 interaction
+  we haven't characterized.
+
+**Things we tried that DON'T work:**
+- Larger rkdeveloptool chunk sizes (8 MB and up: immediate failure)
+- pyusb persistent-handle rockusb client (pipe error on CBW)
+- ADB shell `dd if=/dev/block/mmcblk1 ...` (block devices are root-
+  only on user build; shell has zero capabilities; SELinux enforcing;
+  no `adb root` since not userdebug)
+- Booting to recovery via misc partition (Rockchip ignores standard
+  Android BCB format -- documented earlier in this file)
+
+**Things to try next:**
+
+1. **rkdeveloptool 4 MB chunks with power-cycle between groups.** Do
+   ~6 chunks (24 MB), power-cycle the device to reset Loader state,
+   resume from the next chunk. Tedious but lets us dump the full
+   12 GB of eMMC across N power-cycles. dump-range.ps1 already has
+   the chunk timeout machinery; just need a wrapper that pauses and
+   asks the user to power-cycle.
+
+2. **Bypass cpebit's `rl` by calling libusb directly via dump-all.py,
+   but figure out why CBW writes stall.** The interface descriptor
+   shows FF/06/05 (not the more standard FF/FF/00 of recovery). The
+   stall might be from missing a clear-feature/halt sequence on the
+   bulk OUT endpoint after Zadig's WinUSB binding. Try
+   `usb.util.dispose_resources()` + reset + claim_interface again
+   before the first CBW. Also try sending a SCSI INQUIRY or
+   TestUnitReady (opcode 0x00) first as a "wake up" CBW.
+
+3. **Build cpebit's rkdeveloptool from upstream source on Windows**
+   with bigger chunk buffers and proper handle reuse. Source:
+   github.com/rockchip-linux/rkdeveloptool.
+
+4. **Sidestep the backup question for Mabu-software extraction.**
+   On a fresh Mabu, instead of forensic raw dump, do a "privileged
+   helper" approach: write a small APK to /system/priv-app/ via
+   Loader; it runs in system_app context which can read /data/data/
+   for any app. From ADB shell, signal that helper (broadcast intent)
+   to copy /data/data/com.catalia.* to /sdcard, then `adb pull`. This
+   handles Mabu data even though /data is FBE-encrypted -- Android
+   already decrypted DE storage at boot, the helper just walks the
+   filesystem.
+
+scripts/dump-all.py is a starting point for #2. Both protocol fix
+attempts (cmd_len, params layout, single-bulk-read) are in there.
+rockusb.py is updated to accept PID 0x320A and any vendor-class
+interface (FF/06/05 OR FF/FF/00). Power cycle the tablet to a fresh
+Loader before each attempt.
+
 ## Operational reality
 
 Deployed Mabu tablets have **NO external USB port and NO buttons** —
