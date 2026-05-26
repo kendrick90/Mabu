@@ -21,13 +21,45 @@ screen (no Esper UI, no kiosk lock). What worked:
 5. After reset, USB enumerated as PID 0x0011 (standard Rockchip MTP+ADB,
    was 0x0006 under Esper). Home screen visible, no kiosk.
 
-**Still broken:**
-- Settings app crashes on launch ("Settings keeps stopping")
-- ADB shows `unauthorized`; the "Allow USB debugging?" auth dialog never
-  appears on the tablet screen (likely SystemUI's UsbDebuggingActivity
-  has the same /data init issue as Settings)
-- Suspect: more /data still needs to be wiped to force a fully clean
-  reformat. 1 GB wipe is the next attempt.
+**Resolved:** ADB shell now works unconditionally. Root cause was NOT
+ro.adb.secure — adbd on this Rockchip 8.1 build has the `auth_required`
+global hardcoded to `1` in its .data section (Rockchip's adbd seems to
+ignore `ro.adb.secure`). One-byte patch at file_off 0xD311C of
+/system/bin/adbd flips it to `0`. We also patched adbd_auth_init to
+return immediately (defense in depth). Loader-side sectors written:
+
+  abs LBA 1,696,240 (one byte at offset 284 in sector: 0x01 -> 0x00)
+  abs LBA 1,694,778 (two bytes at offset 56-57: F0 B5 -> 70 47 / BX LR)
+
+`adb devices` returns `device` immediately on next boot — no dialog,
+no host-key approval needed.
+
+**Settings.apk crash explained:** narrowed to Developer Options sub-page
+only. `DevelopmentSettings.onResume() -> SystemProperties.set(...)` fails
+with "failed to set system property" (probably restricted property on
+this build). Main Settings menu and other subpages work fine. Avoid
+tapping Developer Options on the tablet UI; use ADB for any settings
+work that would have lived there.
+
+## V2 Liberation procedure (for the NEXT Mabu unit)
+
+Critical insight: **don't wipe /data, don't corrupt Esper APKs until
+AFTER you have the Mabu software backed up.** The original procedure
+(corrupt APKs + wipe /data) destroyed the Mabu app on this unit. For
+future units:
+
+1. Catch Rockchip Loader (PID 0x320A) on boot.
+2. Run `scripts/liberate-mabu.ps1 -Reset`. This applies only the
+   parameter patch + the two adbd patches.
+3. Wait for Android to boot. `adb devices` shows `device` instantly.
+4. Backup Mabu software:
+     adb shell tar cf /sdcard/mabu-backup.tar /data/data/com.catalia.* \
+       /data/app/com.catalia.* /data/misc/sounds 2>/dev/null
+     adb pull /sdcard/mabu-backup.tar ./mabu-<serial>-backup.tar
+5. (Optional) Now do the destructive de-Esper steps on this unit:
+   - Corrupt Esper APK EOCDs (use dumps/*-apk-eocd-patched.bin)
+   - Wipe /data head 256 MB (use dumps/zeros-16mb.bin x16)
+   - Reset; device boots to vanilla Android with no kiosk.
 
 **Useful infrastructure built this session:**
 - `scripts/dump-range.ps1` — range-aware partition dump with per-chunk
