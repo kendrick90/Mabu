@@ -34,6 +34,14 @@
 #        sector LBA 1,696,240, byte 284: 0x01 -> 0x00
 #   3. /system/bin/adbd at file offset 0x1C438 (adbd_auth_init prologue)
 #        sector LBA 1,694,778, byte 56-57: 0xF0,0xB5 -> 0x70,0x47 (BX LR)
+#   4. Esper APK EOCD signatures zeroed (PackageManager skips):
+#        espersupervisor.apk at LBA 1,851,238
+#        esperdpc.apk        at LBA 1,981,802
+#        esperhelper.apk     at LBA 2,063,565
+#   5. /system/etc/init/init.esper.rc data block at LBA 2,076,672 zeroed
+#        (kills the set-device-owner init service definition)
+#   6. /system/bin/set-device-owner.sh data block at LBA 1,691,408 zeroed
+#        (defense-in-depth no-op script)
 
 [CmdletBinding()]
 param(
@@ -60,7 +68,14 @@ Write-Host "Loader detected." -ForegroundColor Green
 $inputs = @(
     @{ Name='parameter-patched.img';        Lba=0;       File='dumps/parameter-patched.img' },
     @{ Name='adbd-authreq-patched.bin';     Lba=1696240; File='dumps/adbd-authreq-patched.bin' },
-    @{ Name='adbd-authinit-patched.bin';    Lba=1694778; File='dumps/adbd-authinit-patched.bin' }
+    @{ Name='adbd-authinit-patched.bin';    Lba=1694778; File='dumps/adbd-authinit-patched.bin' },
+    # Esper APK EOCD nukes (PackageManager skips on next scan)
+    @{ Name='espersupervisor-eocd-zero';    Lba=1851238; File='dumps/espersupervisor-apk-eocd-patched.bin' },
+    @{ Name='esperdpc-eocd-zero';           Lba=1981802; File='dumps/esperdpc-apk-eocd-patched.bin' },
+    @{ Name='esperhelper-eocd-zero';        Lba=2063565; File='dumps/esperhelper-apk-eocd-patched.bin' },
+    # Esper init script + set-device-owner.sh zeroed (size in inode stays, content is NUL)
+    @{ Name='set-device-owner.sh-zero';     Lba=1691408; File='dumps/zeros-4k.bin' },
+    @{ Name='init.esper.rc-zero';           Lba=2076672; File='dumps/zeros-4k.bin' }
 )
 foreach ($i in $inputs) {
     $p = Join-Path $Root $i.File

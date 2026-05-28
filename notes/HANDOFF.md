@@ -3,7 +3,73 @@
 Long-running project. Goal: **remove Esper Device Owner kiosk from an
 RK3288 Android 8.1 tablet** so the user can repurpose it.
 
-## Latest status (2026-05-25 session 2)
+## Latest status (2026-05-27 session)
+
+**Unit 2 is fully scrubbed and is now the validated "template state".** Path A
+strategy locked: byte-patch only, no /system dump-and-flash needed.
+
+What was done this session:
+1. Audited unit 2's DPM state via WiFi ADB (10.0.0.147:5555) — confirmed:
+   `Device managed: false`, no device admins, no user restrictions, no
+   esper/shoonya/catalia packages installed.
+2. Recovery partition checked — zero esper/shoonya/catalia strings. Factory
+   reset does NOT redeploy Esper from recovery; the bait was all in /system.
+3. Found two remaining /system Esper init artifacts via ext4 inode walk
+   (`scripts/find-esper-files.py`):
+   - `/system/etc/init/init.esper.rc` (inode 656, data block at abs LBA
+     2,076,672) — defined `set-device-owner` service.
+   - `/system/bin/set-device-owner.sh` (inode 155, data block at abs LBA
+     1,691,408) — ran `dpm set-device-owner io.shoonya.shoonyadpc/...`
+     after every boot.
+4. Extended `scripts/liberate-mabu.ps1` to write 4 KB of zeros at each
+   location, plus the existing EOCD nukes. 8 patch writes total, all
+   idempotent. Validated on unit 2: both files now read as all NULs from
+   ADB; `init.svc.set-device-owner` is no longer registered (was "stopped"
+   before; now empty).
+5. Installed Lawnchair 15 Beta 3 from IzzyOnDroid (Android 8.0+ compat,
+   `apks/Lawnchair.apk`). Removed Nova and KISS. Lawnchair is the default
+   launcher.
+6. Discovered `adb shell reboot loader` cleanly puts the device in Loader
+   without a physical power cycle. Enables fully automated Loader cycles.
+7. Empirically measured Loader read wedge: in a fresh session, ~7 chunks
+   of 4 MB succeed (~28 MB) before wedging on chunk 8. Wedge state
+   requires a physical power cycle to recover (`rd` returns
+   "creating comm object failed"). Implication: any future /system dump
+   must do small batches (5×4MB = 20 MB safe margin) with `rd` and
+   `adb reboot loader` between batches. `scripts/dump-system-cycled.ps1`
+   has this state-machine but was not exercised this session because
+   Path A doesn't need a full dump.
+
+**Assembly-line procedure for a NEW Mabu unit (Path A):**
+
+1. Connect via internal USB harness.
+2. Catch Rockchip Loader (PID 0x320A) on power-on.
+3. `.\scripts\liberate-mabu.ps1 -Reset` — applies all 8 patches
+   (parameter, two adbd, three Esper APK EOCDs, init.esper.rc,
+   set-device-owner.sh) and resets the device.
+4. If the unit was Esper-active (kiosk visible pre-flash), also run
+   `.\scripts\wipe-data-head.ps1 -SizeMB 96 -Reset` to clear stale
+   kiosk policies. Skip for factory-reset units.
+5. Wait for Android boot, `adb connect <tablet-ip>:5555`.
+6. `adb install apks/F-Droid.apk apks/Lawnchair.apk` and
+   `adb shell cmd package set-home-activity app.lawnchair/.LawnchairLauncher`.
+7. Close up the unit.
+
+This works because every Mabu we've seen has byte-identical /system (same
+H7R 8.1.0 build dated Mar 2022). If a unit ever ships with a different
+build, the cycled dumper falls back to dump-and-flash.
+
+**Unit 2 final state (template reference):**
+- IP: 10.0.0.147 (DHCP — set a static lease for stability)
+- WiFi ADB: stable, no auth dialog, port 5555
+- DPM: clean (no owner, no admins, no restrictions)
+- /system Esper APKs: corrupted EOCDs (PackageManager skips)
+- /system init scripts: init.esper.rc + set-device-owner.sh both
+  zeroed (init parses no Esper service)
+- Launcher: Lawnchair 15 Beta 3
+- Other apps: F-Droid
+
+## Previous status (2026-05-25 session 2)
 
 **Esper kiosk neutralized.** Device now boots to normal Android home
 screen (no Esper UI, no kiosk lock). What worked:
