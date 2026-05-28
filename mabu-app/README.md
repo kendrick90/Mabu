@@ -1,5 +1,30 @@
 # mabu-app
 
+> **Superseded by [`../mabu-android/`](../mabu-android/).** This directory
+> is kept as a reference, not a runtime. The Termux/Python loop topped out
+> around 3-5 FPS on still captures; the native Kotlin port runs the full
+> face tracking + ASR + LLM + TTS conversation loop in real time and is the
+> source of truth going forward.
+>
+> What ported where:
+>
+> | This dir | Replaced by |
+> |---|---|
+> | `mabu.py` motor protocol | [`mabu-android/app/src/main/java/com/mabu/faceoverlay/MabuMotors.kt`](../mabu-android/app/src/main/java/com/mabu/faceoverlay/MabuMotors.kt) |
+> | `face-mirror.py` (OpenCV LBP @ 3-5 FPS) | `mabu-android/` (ML Kit + Camera1 @ 8-15 FPS, plus pupil-gaze, attention, modes) |
+> | `lbpcascade_frontalface.xml` | ML Kit's bundled face detector (no asset needed) |
+>
+> Keep this Python around as the shorter, more readable wire-protocol
+> reference, and for any future scenario where Mabu needs to be driven from
+> a non-Android host (a Pi, a dev box doing protocol exploration, etc.).
+> The Kotlin port is line-for-line comparable; if you change one,
+> consider whether the other needs the same update. Per-unit-4
+> calibration corrections (eyelid + EUD inversion, see
+> [`notes/motor-protocol.md`](../notes/motor-protocol.md) and the
+> motor-calibration memory) live on the Kotlin side only.
+
+---
+
 Python prototype layer for an embodied Claude on a liberated Mabu robot.
 Runs on the tablet inside Termux. Fast-iteration code lives here; if we
 ever need 30 FPS camera we'll graduate to a native Android shell, but
