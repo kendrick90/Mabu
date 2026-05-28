@@ -159,6 +159,68 @@ rockusb.py is updated to accept PID 0x320A and any vendor-class
 interface (FF/06/05 OR FF/FF/00). Power cycle the tablet to a fresh
 Loader before each attempt.
 
+## Assembly-line strategy (next phase)
+
+The byte-patching v3 procedure works but is per-unit and unreliable
+(broke Dev Options on unit 1, narrowly succeeded on units 2 and the
+current third unit). For going scale, we shift to a "clean firmware
+flash" model:
+
+**Reference units we have:**
+- **Unit 1** (serial 2022010502079): liberated but Dev Options crashes.
+  Lost Mabu IP to wipe. Useful as the first flash-validation target
+  (already broken; can't make it worse).
+- **Unit 2** (serial 2022010500480, IP 10.0.0.147): fully liberated +
+  Nova Launcher + F-Droid + Dev Options works + DPM clean + WiFi ADB
+  stable. **This is the template donor.**
+- **Unit 3** (serial 2022010501476, IP 10.0.0.252): fresh Esper-active
+  Mabu, but we've already extracted its Mabu IP into
+  mabu-archive/unit-2022010501476/ (56 MB: 7 APKs + sdcard +
+  dumpsys/getprop). Leave it Esper-active for now as a reference
+  Esper-managed state. Will eventually be a flash-validation target.
+
+**Build pipeline (tasks #13-#16):**
+
+1. **Dump unit 2's clean state** as the template:
+   - /system (~2 GB) -- still need to solve Loader read wedge OR
+     `adb pull /system/` recursively + rebuild as ext4 on host using
+     mkfs.ext4 / make_ext4fs (preserves files; SELinux contexts may
+     need separate fixup via fs_config + selinux contexts file).
+   - /vendor (256 MB), should be identical across units but capture
+     anyway.
+   - parameter.img (already have).
+   - manifest of /data/app to know which APKs to side-install on
+     first boot (Nova, F-Droid).
+   - Output: a flashable `clean-system.img` + companion `clean-data-
+     starter.tar` for post-boot install.
+
+2. **Build `flash-clean-firmware.ps1`**:
+   - Catches Loader.
+   - Writes parameter-patched.img to LBA 0.
+   - Writes clean-system.img to LBA 0x18A000 (2 GB write, will need
+     chunking; writes haven't shown the cumulative-wedge that reads
+     have, so single-shot bulk write may work).
+   - Wipes /data head 96 MB so vold reformats fresh.
+   - Sends `rd`.
+   - Tablet boots into the donor state automatically. Factory reset
+     stays in the donor state (no Esper anywhere in /system to
+     re-deploy, no DO in /data).
+
+3. **Validate** on unit 1 first (already broken, low risk), then on
+   unit 3 (fresh Mabu, real-world validation).
+
+4. **Assembly-line procedure for new Mabus**:
+   - Plug in via harness.
+   - Run `extract-mabu.ps1` -- liberate + ADB-pull Mabu IP to
+     mabu-archive/unit-<serial>/ (we have this procedure validated).
+   - Run `flash-clean-firmware.ps1` -- one command, one harness cycle.
+   - Done. Close up.
+
+**App-store choice:** install Aurora Store via F-Droid on the
+template-donor (unit 2) before dumping. Aurora provides Play-Store-
+catalog access without needing Google Play Services. Lighter than
+OpenGApps; sufficient for repurposed-tablet use cases.
+
 ## Operational reality
 
 Deployed Mabu tablets have **NO external USB port and NO buttons** —
