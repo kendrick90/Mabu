@@ -29,7 +29,7 @@
 # Patches applied (LBAs are absolute sectors on the eMMC):
 #   1. Parameter file (sector 0)
 #        whole 8 KB rewritten with veritymode=disabled, selinux=permissive,
-#        Rockchip CRC32 recomputed. Source: dumps/parameter-patched.img
+#        Rockchip CRC32 recomputed. Source: firmware/patches/parameter-patched.img
 #   2. /system/bin/adbd at file offset 0xD311C (auth_required global)
 #        sector LBA 1,696,240, byte 284: 0x01 -> 0x00
 #   3. /system/bin/adbd at file offset 0x1C438 (adbd_auth_init prologue)
@@ -66,16 +66,16 @@ Write-Host "Loader detected." -ForegroundColor Green
 
 # Inputs that must exist (precomputed patches)
 $inputs = @(
-    @{ Name='parameter-patched.img';        Lba=0;       File='dumps/parameter-patched.img' },
-    @{ Name='adbd-authreq-patched.bin';     Lba=1696240; File='dumps/adbd-authreq-patched.bin' },
-    @{ Name='adbd-authinit-patched.bin';    Lba=1694778; File='dumps/adbd-authinit-patched.bin' },
+    @{ Name='parameter-patched.img';        Lba=0;       File='firmware/patches/parameter-patched.img' },
+    @{ Name='adbd-authreq-patched.bin';     Lba=1696240; File='firmware/patches/adbd-authreq-patched.bin' },
+    @{ Name='adbd-authinit-patched.bin';    Lba=1694778; File='firmware/patches/adbd-authinit-patched.bin' },
     # Esper APK EOCD nukes (PackageManager skips on next scan)
-    @{ Name='espersupervisor-eocd-zero';    Lba=1851238; File='dumps/espersupervisor-apk-eocd-patched.bin' },
-    @{ Name='esperdpc-eocd-zero';           Lba=1981802; File='dumps/esperdpc-apk-eocd-patched.bin' },
-    @{ Name='esperhelper-eocd-zero';        Lba=2063565; File='dumps/esperhelper-apk-eocd-patched.bin' },
+    @{ Name='espersupervisor-eocd-zero';    Lba=1851238; File='firmware/patches/espersupervisor-apk-eocd-patched.bin' },
+    @{ Name='esperdpc-eocd-zero';           Lba=1981802; File='firmware/patches/esperdpc-apk-eocd-patched.bin' },
+    @{ Name='esperhelper-eocd-zero';        Lba=2063565; File='firmware/patches/esperhelper-apk-eocd-patched.bin' },
     # Esper init script + set-device-owner.sh zeroed (size in inode stays, content is NUL)
-    @{ Name='set-device-owner.sh-zero';     Lba=1691408; File='dumps/zeros-4k.bin' },
-    @{ Name='init.esper.rc-zero';           Lba=2076672; File='dumps/zeros-4k.bin' }
+    @{ Name='set-device-owner.sh-zero';     Lba=1691408; File='firmware/patches/zeros-4k.bin' },
+    @{ Name='init.esper.rc-zero';           Lba=2076672; File='firmware/patches/zeros-4k.bin' }
 )
 foreach ($i in $inputs) {
     $p = Join-Path $Root $i.File

@@ -1,6 +1,6 @@
 # analyze-dump.ps1
 #
-# Reads files in dumps\ and identifies what they are. For boot.img,
+# Reads files in firmware\originals\ and identifies what they are. For boot.img,
 # parses the Android boot header v0/v1/v2 to extract kernel cmdline,
 # OS version, and key offsets - this is usually the most informative
 # single artifact for figuring out what SoC / kernel / Android variant
@@ -11,7 +11,7 @@
 # (script tells you where to point them).
 #
 # Usage:
-#   .\analyze-dump.ps1                    # analyze all *.img in dumps\
+#   .\analyze-dump.ps1                    # analyze all *.img in firmware\originals\
 #   .\analyze-dump.ps1 -Image boot        # analyze a specific one
 #   .\analyze-dump.ps1 -WriteNotes        # also append findings to notes\dump-analysis.md
 
@@ -23,11 +23,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$DumpDir  = Join-Path $RepoRoot 'dumps'
+$DumpDir  = Join-Path $RepoRoot 'firmware\originals'
 $NotesOut = Join-Path $RepoRoot 'notes\dump-analysis.md'
 
 if (-not (Test-Path $DumpDir)) {
-    Write-Host "No dumps\ directory yet. Run scripts\dump-partitions.ps1 first." -ForegroundColor Yellow
+    Write-Host "No firmware\originals\ directory yet. Run scripts\dump-partitions.ps1 first." -ForegroundColor Yellow
     exit 1
 }
 

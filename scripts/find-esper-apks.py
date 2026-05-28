@@ -5,7 +5,7 @@ can plan a targeted patch to its zip header."""
 import os, struct
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SYS  = open(os.path.join(ROOT,'dumps','system.img'),'rb').read()
+SYS  = open(os.path.join(ROOT,'firmware','system-probes','system.img'),'rb').read()
 
 BLK = 4096
 INODE_SIZE = 256
@@ -22,7 +22,7 @@ for fname, start in [
     ('system-etc-below.img', 230686720),
     ('system-etc-region.img', 241172480),
 ]:
-    p = os.path.join(ROOT,'dumps',fname)
+    p = os.path.join(ROOT,'firmware','system-probes',fname)
     if os.path.exists(p):
         REGIONS.append((fname, start, open(p,'rb').read()))
 

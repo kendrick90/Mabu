@@ -9,9 +9,9 @@ We dumped:
 import os, struct
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SYS  = open(os.path.join(ROOT,'dumps','system.img'),'rb').read()
-APP  = open(os.path.join(ROOT,'dumps','system-app-region.img'),'rb').read()
-PRIV = open(os.path.join(ROOT,'dumps','system-privapp-region.img'),'rb').read()
+SYS  = open(os.path.join(ROOT,'firmware','system-probes','system.img'),'rb').read()
+APP  = open(os.path.join(ROOT,'firmware','system-probes','system-app-region.img'),'rb').read()
+PRIV = open(os.path.join(ROOT,'firmware','system-probes','system-privapp-region.img'),'rb').read()
 
 BLK = 4096
 INODE_SIZE = 256
@@ -23,8 +23,8 @@ REGIONS = [
     ('system',  0,           SYS),
     ('app',     41943040,    APP),
     ('priv',    257949696,   PRIV),
-    ('etc-below',  230686720, open(os.path.join(ROOT,'dumps','system-etc-below.img'),'rb').read()),
-    ('etc-region', 241172480, open(os.path.join(ROOT,'dumps','system-etc-region.img'),'rb').read()),
+    ('etc-below',  230686720, open(os.path.join(ROOT,'firmware','system-probes','system-etc-below.img'),'rb').read()),
+    ('etc-region', 241172480, open(os.path.join(ROOT,'firmware','system-probes','system-etc-region.img'),'rb').read()),
 ]
 
 def read_block(part_byte):

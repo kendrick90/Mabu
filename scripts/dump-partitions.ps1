@@ -1,10 +1,10 @@
 # dump-partitions.ps1
 #
 # Dumps partitions from the Mabu's eMMC via rkdeveloptool, in safe order:
-#   1. Reads chip info / flash info (instant) -> dumps\device-info.txt
-#   2. Reads partition table                  -> dumps\partition-table.txt
-#   3. Dumps each partition smallest-first    -> dumps\<name>.img
-#   4. Computes SHA-256 for each dump         -> dumps\sha256sums.txt
+#   1. Reads chip info / flash info (instant) -> firmware\scratch\device-info.txt
+#   2. Reads partition table                  -> firmware\scratch\partition-table.txt
+#   3. Dumps each partition smallest-first    -> firmware\scratch\<name>.img
+#   4. Computes SHA-256 for each dump         -> firmware\scratch\sha256sums.txt
 #
 # Defaults are intentionally conservative:
 #   - userdata, cache, metadata, frp are SKIPPED (huge, PII-bearing,
@@ -22,7 +22,7 @@
 #   .\dump-partitions.ps1 -Force            # don't prompt for confirmation
 #
 # This script is read-only with respect to the device. It never writes,
-# erases, or reboots. The only side effect is creating files under dumps\.
+# erases, or reboots. The only side effect is creating files under firmware\scratch\.
 
 [CmdletBinding()]
 param(
@@ -38,7 +38,7 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $RkExe    = Join-Path $RepoRoot 'tools\rkdeveloptool\rkdeveloptool.exe'
-$DumpDir  = Join-Path $RepoRoot 'dumps'
+$DumpDir  = Join-Path $RepoRoot 'firmware\scratch'
 
 # Always-skip list - append to whatever the user passes via -Skip.
 $DefaultSkip = @('userdata','cache','metadata','frp','persist','misc','baseparameter')
@@ -255,7 +255,7 @@ if ($failed -gt 0) {
 }
 
 Write-Host 'Done. Useful follow-ups:' -ForegroundColor Green
-Write-Host '  - binwalk dumps\boot.img             (kernel + ramdisk inside)'
-Write-Host '  - strings dumps\uboot.img | less     (u-boot version, build date, env)'
-Write-Host '  - simg2img dumps\system.img system.raw.img  (if it is a sparse image)'
-Write-Host '  - file dumps\*.img                   (identify what each one is)'
+Write-Host '  - binwalk firmware\scratch\boot.img             (kernel + ramdisk inside)'
+Write-Host '  - strings firmware\scratch\uboot.img | less     (u-boot version, build date, env)'
+Write-Host '  - simg2img firmware\scratch\system.img system.raw.img  (if it is a sparse image)'
+Write-Host '  - file firmware\scratch\*.img                   (identify what each one is)'

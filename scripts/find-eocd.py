@@ -6,7 +6,7 @@ We then dump that sector and locate the PK\\x05\\x06 magic inside it."""
 import os, struct, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SYS  = open(os.path.join(ROOT,'dumps','system.img'),'rb').read()
+SYS  = open(os.path.join(ROOT,'firmware','system-probes','system.img'),'rb').read()
 
 BLK = 4096
 INODE_SIZE = 256

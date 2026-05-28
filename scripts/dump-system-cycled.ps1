@@ -6,8 +6,8 @@
 # do N chunks per session, rd cleanly *before* wedge, re-enter via wifi adb
 # `reboot loader`, resume.
 #
-# State file (dumps/<Name>.state.json) tracks the next byte offset, so the
-# script can be interrupted and resumed. Output goes to dumps/<Name>.img,
+# State file (firmware/scratch/<Name>.state.json) tracks the next byte offset, so the
+# script can be interrupted and resumed. Output goes to firmware/scratch/<Name>.img,
 # opened in append mode.
 #
 # Pre-reqs:
@@ -39,7 +39,7 @@ $RK = 'C:\Users\User\Documents\GitHub\Mabu\tools\rkdeveloptool\rkdeveloptool.exe
 $ADB = (Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Google.PlatformTools_*\platform-tools\adb.exe" | Select-Object -First 1).FullName
 if (-not $ADB) { throw "adb.exe not found" }
 
-$DumpDir = 'C:\Users\User\Documents\GitHub\Mabu\dumps'
+$DumpDir = 'C:\Users\User\Documents\GitHub\Mabu\firmware\scratch'
 $OutFile = Join-Path $DumpDir "$Name.img"
 $StateFile = Join-Path $DumpDir "$Name.state.json"
 

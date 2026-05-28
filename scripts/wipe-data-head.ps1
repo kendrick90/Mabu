@@ -29,7 +29,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Rk    = 'C:\Users\User\Documents\GitHub\Mabu\tools\rkdeveloptool\rkdeveloptool.exe'
-$Zeros = 'C:\Users\User\Documents\GitHub\Mabu\dumps\zeros-16mb.bin'
+$Zeros = 'C:\Users\User\Documents\GitHub\Mabu\firmware\patches\zeros-16mb.bin'
 
 # /data partition starts at sector 0x692400 per parameter file
 $BaseLBA  = 0x692400

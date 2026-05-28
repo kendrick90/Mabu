@@ -16,7 +16,7 @@ For each directory inode we find, print:
 import os, struct, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SYS  = os.path.join(ROOT, 'dumps', 'system.img')
+SYS  = os.path.join(ROOT, 'firmware', 'system-probes', 'system.img')
 
 BLK         = 4096
 INODE_SIZE  = 256

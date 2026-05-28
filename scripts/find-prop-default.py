@@ -19,8 +19,8 @@ prop string, plus the sector + absolute LBA needed for a targeted write.
 import os, struct, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SYSTEM_IMG       = os.path.join(ROOT, 'dumps', 'system.img')
-ETC_REGION_IMG   = os.path.join(ROOT, 'dumps', 'system-etc-combined.img')
+SYSTEM_IMG       = os.path.join(ROOT, 'firmware', 'system-probes', 'system.img')
+ETC_REGION_IMG   = os.path.join(ROOT, 'firmware', 'system-probes', 'system-etc-combined.img')
 
 # /system partition (absolute) and the etc-region's start *within* /system
 SYSTEM_LBA_START  = 0x18A000                 # absolute LBA where /system begins
@@ -173,7 +173,7 @@ def main():
         if contents:
             contents = contents[:size]
             # save for inspection
-            outp = os.path.join(ROOT, 'dumps', f'{name}.bin')
+            outp = os.path.join(ROOT, 'firmware', 'scratch', f'{name}.bin')
             with open(outp, 'wb') as f:
                 f.write(contents)
             print(f'  saved {len(contents)} bytes to {outp}')

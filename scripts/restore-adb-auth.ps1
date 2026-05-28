@@ -13,7 +13,7 @@
 # Pre-reqs:
 #   - Device in Rockchip Loader (PID 0x320A). If currently in Android,
 #     get there with `adb -s <serial> shell reboot loader`.
-#   - dumps/adbd-authreq-orig.bin and dumps/adbd-authinit-orig.bin must
+#   - firmware/originals/adbd-authreq-orig.bin and adbd-authinit-orig.bin must
 #     exist (they were captured during the unit-2 liberation session).
 #
 # What's preserved: the parameter patch (verity off + selinux
@@ -43,8 +43,8 @@ if ($out -notmatch 'Vid=0x2207,Pid=0x320a.*Loader') {
 Write-Host 'Loader detected.' -ForegroundColor Green
 
 $inputs = @(
-    @{ Name='adbd-authreq-orig';  Lba=1696240; File='dumps/adbd-authreq-orig.bin'  },
-    @{ Name='adbd-authinit-orig'; Lba=1694778; File='dumps/adbd-authinit-orig.bin' }
+    @{ Name='adbd-authreq-orig';  Lba=1696240; File='firmware/originals/adbd-authreq-orig.bin'  },
+    @{ Name='adbd-authinit-orig'; Lba=1694778; File='firmware/originals/adbd-authinit-orig.bin' }
 )
 foreach ($i in $inputs) {
     $p = Join-Path $Root $i.File

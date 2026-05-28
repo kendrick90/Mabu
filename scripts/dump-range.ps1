@@ -2,7 +2,7 @@
 #
 # Dumps a contiguous range of LBA sectors from an already-locked Rockchip
 # Loader (PID 320A). Designed for surgical reads under the Loader's per-
-# session wedge limit (~30 MB observed). Writes output to dumps/<name>.img.
+# session wedge limit (~30 MB observed). Writes output to firmware/scratch/<name>.img.
 #
 # Usage:
 #   .\dump-range.ps1 -Name etc-region `
@@ -28,7 +28,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Rk = 'C:\Users\User\Documents\GitHub\Mabu\tools\rkdeveloptool\rkdeveloptool.exe'
-$DumpDir = 'C:\Users\User\Documents\GitHub\Mabu\dumps'
+$DumpDir = 'C:\Users\User\Documents\GitHub\Mabu\firmware\scratch'
 if (-not (Test-Path $DumpDir)) { New-Item -ItemType Directory -Path $DumpDir -Force | Out-Null }
 
 if (($StartByte % 512) -ne 0) { throw "StartByte must be sector-aligned (multiple of 512)" }

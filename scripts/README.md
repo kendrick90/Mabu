@@ -18,7 +18,7 @@ Wraps everything below into a single workflow.
 |---|---|
 | `liberate-mabu.ps1` | The 8 sector patches: parameter file (verity off, selinux permissive), adbd auth bypass (×2), Esper APK EOCD nukes (×3), init.esper.rc zero, set-device-owner.sh zero. Idempotent. |
 | `wipe-data-head.ps1` | Zero the first N MB of /data so vold reformats on boot. Required for active-Esper units (Esper's DPC lives in /data/app). 96 MB is the validated sweet spot. |
-| `patch-parameter.py` | Builds `dumps/parameter-patched.img` from `dumps/parameter.img` with the kernel cmdline + Rockchip CRC32 recomputed. Run once per build to regenerate; output is committed via `liberate-mabu.ps1`. |
+| `patch-parameter.py` | Builds `firmware/patches/parameter-patched.img` from `firmware/originals/parameter.img` with the kernel cmdline + Rockchip CRC32 recomputed. Run once per build to regenerate; output is committed. |
 | `find-eocd.py` | Locates the End-of-Central-Directory record inside each Esper APK and produces the per-APK `*-eocd-patched.bin` sector blobs. |
 
 ## Inspection / file location
@@ -57,19 +57,23 @@ Wraps everything below into a single workflow.
 |---|---|
 | `restore-boot.ps1` | Writes the original boot.img back and clears misc, in case a patch attempt bricks boot. |
 
-## What's in `dumps/` (not committed but referenced by these scripts)
+## firmware/ layout
 
-The patches in `liberate-mabu.ps1` require these payloads on local disk:
+The patches and originals these scripts use live under `firmware/`. See
+`../firmware/README.md` for the full inventory and what each subdirectory
+contains. Quick reference:
 
-- `parameter-patched.img` (8 KB) — produced by `patch-parameter.py`
-- `adbd-authreq-patched.bin` (512 B) — produced once from the adbd binary
-- `adbd-authinit-patched.bin` (512 B) — produced once from the adbd binary
-- `espersupervisor-apk-eocd-patched.bin` (512 B) — produced by `find-eocd.py`
-- `esperdpc-apk-eocd-patched.bin` (512 B)
-- `esperhelper-apk-eocd-patched.bin` (512 B)
-- `zeros-4k.bin` (4 KB) — block of NULs for init.esper.rc and sdo.sh
-- `zeros-16mb.bin` (16 MB) — chunk for /data head wipe
-
-All of these were generated during the unit-2 liberation session and are
-specific to the H7R Mabu build. The dumps directory is gitignored to avoid
-publishing firmware bytes that may contain serials or keys.
+- `firmware/patches/` — committed. Small modified-firmware files written
+  to the eMMC by `liberate-mabu.ps1` / `wipe-data-head.ps1`. Includes
+  `parameter-patched.img`, the two `adbd-*-patched.bin`, the three
+  `*-eocd-patched.bin`, and `zeros-{4k,16mb}.bin`.
+- `firmware/originals/` — committed. Captured-from-device baseline bytes
+  used by `restore-adb-auth.ps1` (the `adbd-*-orig.bin`), by
+  `restore-boot.ps1` (`boot.img`), and as reference for `patch-parameter.py`
+  (`parameter.img`).
+- `firmware/system-probes/` — gitignored. Partial /system extracts used
+  by the ext4 inode walkers (`find-esper-files.py`, `find-prop-default.py`,
+  `find-app-dirs.py`, `find-esper.py`, `find-esper-apks.py`). Regenerate
+  with `dump-range.ps1` if needed.
+- `firmware/scratch/` — gitignored. Everything else: dump output,
+  verification reads, one-off probes.

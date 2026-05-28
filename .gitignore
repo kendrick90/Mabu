@@ -3,13 +3,24 @@ tools/*
 !tools/.gitkeep
 !tools/README.md
 
-# Partition / firmware dumps — large binaries, may contain serials/keys
-dumps/*
-!dumps/.gitkeep
-!dumps/README.md
+# Large binaries are gitignored as a class. Specific firmware files we
+# DO want to track (the small patch payloads and reference originals
+# under firmware/patches and firmware/originals) are unignored below.
 *.img
 *.bin
 *.raw
+
+# firmware/ subdirectories:
+#   patches/   — committed (scripts can't run without these)
+#   originals/ — committed (used by restore-adb-auth, restore-boot, patch-parameter)
+#   system-probes/ — gitignored (large partial /system dumps; regenerable)
+#   scratch/       — gitignored (one-off probes, verification reads)
+firmware/system-probes/
+firmware/scratch/
+!firmware/patches/*.img
+!firmware/patches/*.bin
+!firmware/originals/*.img
+!firmware/originals/*.bin
 
 # OS / editor cruft
 Thumbs.db
@@ -26,10 +37,12 @@ __pycache__/
 
 # session logs / scratch dumps
 log/
-dumps-tablet-reset/probe-*.zip
+dumps-tablet-reset/
 
-# Per-unit pre-liberation captures live in mabu-archive/ (committed,
-# scrubbed of secrets). Old local scratch lived in backups/ and
-# backups-test/ -- both unused now.
+# Old per-unit scratch dirs (unused; per-unit captures live in mabu-archive/)
 backups/
 backups-test/
+
+# Legacy dumps/ location (migrated to firmware/) — keep gitignored in case
+# any local working trees still have it
+dumps/

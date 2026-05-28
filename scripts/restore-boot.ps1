@@ -8,7 +8,7 @@
 
 $ErrorActionPreference = 'Stop'
 $RkExe       = 'C:\Users\User\Documents\GitHub\Mabu\tools\rkdeveloptool\rkdeveloptool.exe'
-$Original    = 'C:\Users\User\Documents\GitHub\Mabu\dumps\boot.img'
+$Original    = 'C:\Users\User\Documents\GitHub\Mabu\firmware\originals\boot.img'
 
 if (-not (Test-Path $RkExe))    { Write-Host "rkdeveloptool not found at $RkExe" -ForegroundColor Red; exit 1 }
 if (-not (Test-Path $Original)) { Write-Host "Original boot.img not found at $Original" -ForegroundColor Red; exit 1 }
@@ -42,7 +42,7 @@ Write-Host ("Write took {0:N1}s" -f $sw.Elapsed.TotalSeconds) -ForegroundColor G
 
 Write-Host ""
 Write-Host "=== Verifying first sector of boot partition ===" -ForegroundColor Cyan
-$verifyFile = 'C:\Users\User\Documents\GitHub\Mabu\dumps\verify-restore.bin'
+$verifyFile = 'C:\Users\User\Documents\GitHub\Mabu\firmware\scratch\verify-restore.bin'
 if (Test-Path $verifyFile) { Remove-Item $verifyFile -Force }
 & $RkExe rl 0x20000 4 $verifyFile 2>&1 | Out-Null
 if (Test-Path $verifyFile) {
@@ -66,7 +66,7 @@ Write-Host ""
 Write-Host "=== Clearing misc partition (in case of stored boot-failure counter) ===" -ForegroundColor Cyan
 # Misc is 0x2000 sectors (4 MB) starting at sector 0x6000. Write 32 sectors
 # of zeros (16 KB) at the start - that's enough to clear the BCB structure.
-$zeroFile = 'C:\Users\User\Documents\GitHub\Mabu\dumps\zeros-16k.bin'
+$zeroFile = 'C:\Users\User\Documents\GitHub\Mabu\firmware\scratch\zeros-16k.bin'
 $zeros = New-Object byte[] (16 * 1024)
 [System.IO.File]::WriteAllBytes($zeroFile, $zeros)
 & $RkExe wl 0x6000 $zeroFile 2>&1 | Out-String

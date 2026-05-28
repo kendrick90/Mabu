@@ -5,22 +5,23 @@ Resolve the on-disk byte / LBA locations of:
   - /system/etc/init/init.esper.rc
   - /system/bin/set-device-owner.sh
 
-Uses inode walk over dumps/system.img + dumps/system-etc-combined.img
-(combined covers partition bytes 220 MiB..246 MiB) plus
-dumps/system-bin-head.img if present.
+Uses inode walk over firmware/system-probes/system.img +
+firmware/system-probes/system-etc-combined.img (combined covers partition
+bytes 220 MiB..246 MiB) plus firmware/system-probes/system-bin-head.img
+if present.
 """
 import os, struct, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SYS_IMG = os.path.join(ROOT, 'dumps', 'system.img')                  # first 35 MB (inode tables)
-ETC_IMG = os.path.join(ROOT, 'dumps', 'system-etc-combined.img')     # 220..246 MiB (covers /etc/init dirent)
-BIN_IMG = os.path.join(ROOT, 'dumps', 'system-bin-head.img')         # /bin region
+SYS_IMG = os.path.join(ROOT, 'firmware', 'system-probes', 'system.img')                  # first 35 MB (inode tables)
+ETC_IMG = os.path.join(ROOT, 'firmware', 'system-probes', 'system-etc-combined.img')     # 220..246 MiB (covers /etc/init dirent)
+BIN_IMG = os.path.join(ROOT, 'firmware', 'system-probes', 'system-bin-head.img')         # /bin region
 
 SYS_LBA = 0x18A000
 
 # Region base offsets within /system partition (from prior session)
 ETC_BASE = 220 * 1024 * 1024  # combined starts at 220 MiB
-# bin-head: 4 MB. We saw set-device-owner.sh in dumps/system.img at byte 34228480.
+# bin-head: 4 MB. We saw set-device-owner.sh in system.img at byte 34228480.
 # system.img is the first 35 MB of /system partition. So /bin's content lives early.
 
 BLK = 4096

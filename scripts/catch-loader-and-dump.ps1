@@ -28,7 +28,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Rk = 'C:\Users\User\Documents\GitHub\Mabu\tools\rkdeveloptool\rkdeveloptool.exe'
-$DumpDir = 'C:\Users\User\Documents\GitHub\Mabu\dumps'
+$DumpDir = 'C:\Users\User\Documents\GitHub\Mabu\firmware\scratch'
 if (-not (Test-Path $DumpDir)) { New-Item -ItemType Directory -Path $DumpDir -Force | Out-Null }
 
 # Partition layout extracted from parameter file at sector 0
