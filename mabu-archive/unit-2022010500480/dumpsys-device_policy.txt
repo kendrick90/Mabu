@@ -1,0 +1,17 @@
+Current Device Policy Manager state:
+  Device Owner: 
+    admin=ComponentInfo{io.shoonya.shoonyadpc/com.shoonyaos.shoonyadpc.receivers.AdminReceiver}
+    name=
+    package=io.shoonya.shoonyadpc
+    User ID: 0
+
+  Enabled Device Admins (User 0, provisioningState: 3):
+ 
+    mPasswordOwner=-1
+
+  Constants:
+    DAS_DIED_SERVICE_RECONNECT_BACKOFF_SEC: 3600
+    DAS_DIED_SERVICE_RECONNECT_BACKOFF_INCREASE: 2.0
+    DAS_DIED_SERVICE_RECONNECT_MAX_BACKOFF_SEC: 86400
+
+  Encryption Status: block default key

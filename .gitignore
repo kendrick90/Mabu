@@ -28,6 +28,8 @@ __pycache__/
 log/
 dumps-tablet-reset/probe-*.zip
 
-# per-unit backups (large, potentially sensitive) — kept locally only
+# Per-unit pre-liberation captures live in mabu-archive/ (committed,
+# scrubbed of secrets). Old local scratch lived in backups/ and
+# backups-test/ -- both unused now.
 backups/
 backups-test/

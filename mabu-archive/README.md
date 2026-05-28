@@ -4,7 +4,18 @@ Forensic captures from individual Mabu units pulled before destructive
 liberation steps. Each subdirectory is one unit, named by its serial
 (visible as `ro.serialno`).
 
-## What's in each unit's directory
+## Captured units
+
+- **`unit-2022010500480/`** (= "unit 2") — pre-liberation dumpsys snapshot
+  only (no APKs, no /sdcard). Used as the template-donor; captured before
+  the v2 liberation procedure existed.
+- **`unit-2022010501476/`** (= "unit 3") — full forensic capture: 7 APKs
+  (Catalia + Esper + OpenCV), /sdcard contents (animation CSVs, Nuance
+  voice assets), dumpsys, getprop. This is the canonical source for
+  `flash-mabu.ps1 -RestoreMabu` to install factorymode + assets onto
+  freshly-wiped units. Captured before /data wipe per V3 procedure.
+
+## What's in a full-capture unit directory
 
 - `apks/` — every Catalia / Esper / OpenCV APK that was installed in
   `/data/app` on that unit. The crown jewel is `com.catalia.factorymode.apk`
