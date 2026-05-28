@@ -1,5 +1,14 @@
 # MaskROM extraction plan
 
+> **OBSOLETE** — kept for reference. We never needed MaskROM in the end.
+> The Rockchip Loader window (PID 0x320A) is exposed for ~10 seconds on
+> every normal power-on, and any rockusb command latches it indefinitely.
+> That's enough to do all of the sector R/W needed for the liberation.
+> See the top-level [README.md](../README.md) for the validated procedure.
+> Leaving this here in case Loader access ever stops working and we have
+> to escalate to a hardware short on an eMMC pin.
+
+
 ## Why this is the path
 
 After extensive software work:

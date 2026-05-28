@@ -1,5 +1,10 @@
 # Access attempts log
 
+> **HISTORICAL** — this file captures the early exploration before we
+> found the working path. Current procedure lives in
+> [../README.md](../README.md) and [HANDOFF.md](HANDOFF.md). Kept here so
+> a future agent can see what was tried and ruled out.
+
 Living record of what we've tried to get authorized access to the Mabu's
 Android system, what worked, what didn't, and why.
 

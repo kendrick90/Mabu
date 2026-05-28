@@ -1,5 +1,11 @@
 # Mabu/Esper tablet unlock — agent handoff
 
+> **For current procedure: see [../README.md](../README.md).**
+> This file is the chronological session log — what was tried, in what
+> order, what failed and why. Useful when something doesn't match
+> expected behavior and you need to know *why* the procedure looks the
+> way it does. Sessions are listed newest-first.
+
 Long-running project. Goal: **remove Esper Device Owner kiosk from an
 RK3288 Android 8.1 tablet** so the user can repurpose it.
 
