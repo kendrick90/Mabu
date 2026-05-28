@@ -108,12 +108,12 @@ by /data reformat.
 
 ## Per-unit state matrix (after liberation)
 
-| Unit | Serial | DO | Esper | USB ADB | WiFi ADB | Notes |
-|---|---|---|---|---|---|---|
-| 1 | 2022010502079 | clear | clean | wedges (offline after handshake) | 10.0.0.161 | Dev Options crashes; cause unknown despite byte-identical /system with units 2-4 |
-| 2 | 2022010500480 | clear | clean | works | 10.0.0.147 | Template reference. Dev Options OK |
-| 3 | 2022010501476 | clear | clean | works | 10.0.0.252 | Liberated; SIM + Quectel LTE modem present |
-| 4 | 2022010501557 | clear | clean | works | 10.0.0.69 | Liberated via flash-mabu.ps1 |
+| Unit | Serial | DO | Esper | USB ADB | WiFi ADB | ADB auth | Disposition |
+|---|---|---|---|---|---|---|---|
+| 1 | 2022010502079 | clear | clean | wedges | 10.0.0.161 | dev-mode (no auth) | Donor board: power board reused for the USB/Loader programming harness. Dev Options crashes; cause unknown despite byte-identical /system with units 2-4. Deferred — may revisit via full firmware dump-and-replace if it ever stops being a donor |
+| 2 | 2022010500480 | clear | clean | works | 10.0.0.147 | ✅ restored | Returning to original owner (friend who lent unit 1). Currently mostly disassembled |
+| 3 | 2022010501476 | clear | clean | works | 10.0.0.252 | ✅ restored | Working in body; antenna seating was finicky during reassembly but final reads were the best of the session (WiFi −62 dBm, LTE RSRP −97 dBm). SIM present |
+| 4 | 2022010501557 | clear | clean | works | 10.0.0.69 | ✅ restored | **Primary unit going forward.** Cleanest of the fleet, fully provisioned via the unified script, deploy-ready |
 
 ## Caveats / known limits
 
