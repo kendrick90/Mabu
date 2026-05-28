@@ -46,3 +46,7 @@ backups-test/
 # Legacy dumps/ location (migrated to firmware/) — keep gitignored in case
 # any local working trees still have it
 dumps/
+
+# Large APKs we don't ship in the repo (downloadable from F-Droid)
+apks/Termux.apk
+apks/Termux-API.apk
