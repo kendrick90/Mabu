@@ -1,6 +1,8 @@
 package com.mabu.faceoverlay
 
+import android.graphics.Bitmap
 import android.graphics.PointF
+import android.graphics.Rect
 import android.util.Log
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.Face
@@ -24,7 +26,11 @@ data class FaceResult(
     val imageWidth: Int,
     val imageHeight: Int,
     val rotationDegrees: Int,
-    val gaze: GazeData? = null
+    val gaze: GazeData? = null,
+    /** Cropped face bitmap (raw camera coords, un-mirrored) for the inset close-up view. */
+    val faceCrop: Bitmap? = null,
+    /** Source-image rect that [faceCrop] covers, so the overlay can map landmarks into it. */
+    val cropRect: Rect? = null
 )
 
 class FaceAnalyzer(
@@ -62,10 +68,62 @@ class FaceAnalyzer(
         detector.process(input)
             .addOnSuccessListener { faces ->
                 val gaze = computeGaze(faces, rawBytes, rawWidth, rawHeight, rotationDegrees)
-                onResult(FaceResult(faces, rotatedWidth, rotatedHeight, rotationDegrees, gaze))
+                val (crop, cropRect) = computeFaceCrop(faces, rawBytes, rawWidth, rawHeight, rotationDegrees)
+                onResult(FaceResult(faces, rotatedWidth, rotatedHeight, rotationDegrees, gaze, crop, cropRect))
             }
             .addOnFailureListener { e -> Log.w(TAG, "Detection failed", e) }
             .addOnCompleteListener { onDone() }
+    }
+
+    /**
+     * Crop the primary face out of the NV21 frame and convert directly to
+     * ARGB. Avoids the YuvImage -> JPEG -> Bitmap path which would be too
+     * expensive at our detection rate.
+     */
+    private fun computeFaceCrop(
+        faces: List<Face>, nv21: ByteArray, w: Int, h: Int, rotation: Int
+    ): Pair<Bitmap?, Rect?> {
+        if (rotation != 0) return Pair(null, null)
+        val face = faces.firstOrNull() ?: return Pair(null, null)
+        val bb = face.boundingBox
+        // Expand 25% to include hair / chin context.
+        val expand = (kotlin.math.max(bb.width(), bb.height()) * 0.25f).toInt()
+        val left   = (bb.left   - expand).coerceAtLeast(0)
+        val top    = (bb.top    - expand).coerceAtLeast(0)
+        val right  = (bb.right  + expand).coerceAtMost(w)
+        val bottom = (bb.bottom + expand).coerceAtMost(h)
+        val cw = right - left
+        val ch = bottom - top
+        if (cw < 8 || ch < 8) return Pair(null, null)
+
+        val pixels = IntArray(cw * ch)
+        val frameSize = w * h
+        // NV21: full Y plane, then interleaved VU pairs at half-resolution.
+        for (dy in 0 until ch) {
+            val y = top + dy
+            val yRow = y * w
+            val uvRow = frameSize + (y / 2) * w
+            val outRow = dy * cw
+            for (dx in 0 until cw) {
+                val x = left + dx
+                val Y = nv21[yRow + x].toInt() and 0xFF
+                val uvOff = uvRow + (x and 0xFFFFFFFE.toInt())
+                val V = nv21[uvOff].toInt() and 0xFF
+                val U = nv21[uvOff + 1].toInt() and 0xFF
+                val yy = Y - 16
+                val uu = U - 128
+                val vv = V - 128
+                var r = (1192 * yy + 1634 * vv) shr 10
+                var g = (1192 * yy -  833 * vv - 400 * uu) shr 10
+                var b = (1192 * yy + 2066 * uu) shr 10
+                if (r < 0) r = 0 else if (r > 255) r = 255
+                if (g < 0) g = 0 else if (g > 255) g = 255
+                if (b < 0) b = 0 else if (b > 255) b = 255
+                pixels[outRow + dx] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+        val bmp = Bitmap.createBitmap(pixels, cw, ch, Bitmap.Config.ARGB_8888)
+        return Pair(bmp, Rect(left, top, right, bottom))
     }
 
     private fun computeGaze(

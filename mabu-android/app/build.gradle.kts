@@ -64,4 +64,9 @@ dependencies {
     // ships armeabi-v7a). ~6 MB. Returns landmarks, contours, and
     // optional eyes-open / smile probability.
     implementation("com.google.mlkit:face-detection:16.1.7")
+
+    // Vosk offline ASR. ~10 MB AAR with armv7 native libs. Reads a small
+    // language model from disk (see /sdcard/vosk-model-en/ on the device).
+    implementation("com.alphacephei:vosk-android:0.3.47@aar")
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
 }

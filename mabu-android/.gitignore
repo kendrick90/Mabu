@@ -10,3 +10,6 @@ captures/
 # Dev screenshots contain the user's face -- keep them local. Curated
 # screenshots can be opted in explicitly with `git add -f`.
 screenshots/
+
+# llama.cpp source. Cloned via setup-llama.ps1; too large to vendor.
+app/src/main/cpp/llama.cpp/

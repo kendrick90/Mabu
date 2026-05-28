@@ -21,12 +21,18 @@ import androidx.core.content.ContextCompat
 
 class MainActivity : AppCompatActivity() {
 
+    private lateinit var rootLayout: FrameLayout
     private lateinit var textureView: TextureView
     private lateinit var overlayView: FaceOverlayView
     private lateinit var settingsPanel: SettingsPanel
+    private lateinit var volLevelView: TextView
     private var cameraSource: Camera1Source? = null
     private val motors = MabuMotors()
     private val handler = Handler(Looper.getMainLooper())
+    private val attention = AttentionTracker()
+    private val tts by lazy { TtsHelper(this) }
+    private var asr: AsrEngine? = null
+    private lateinit var micButton: TextView
 
     private val tuning = TuningSettings()
 
@@ -83,6 +89,7 @@ class MainActivity : AppCompatActivity() {
         tuning.load(prefs)
 
         val root = FrameLayout(this)
+        rootLayout = root
         textureView = TextureView(this)
         overlayView = FaceOverlayView(this)
         val full = FrameLayout.LayoutParams(
@@ -101,10 +108,16 @@ class MainActivity : AppCompatActivity() {
 
         // Settings panel (right side, 45 % of screen width)
         settingsPanel = SettingsPanel(this, tuning,
-            onChanged = { tuning.save(prefs) },
+            onChanged = {
+                tuning.save(prefs)
+                // Apply the latest volume immediately on any slider move.
+                // Cheap and idempotent; lets the slider feel live.
+                tts.applyVolume(tuning.ttsVolume)
+            },
             onCalibrate = { calibrateCenter() },
             onModeSelected = { setMode(it) },
-            currentMode = { mode }
+            currentMode = { mode },
+            onSpeak = { tts.speak(it) }
         )
         root.addView(settingsPanel, FrameLayout.LayoutParams(
             (resources.displayMetrics.widthPixels * 0.45f).toInt(),
@@ -130,7 +143,43 @@ class MainActivity : AppCompatActivity() {
         gearLp.setMargins(0, 24, 24, 0)
         root.addView(gearBtn, gearLp)
 
+        // Always-visible volume controls under the gear (no physical
+        // rocker on this tablet, so we have to provide one).
+        root.addView(buildVolumePanel(), FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.END
+        ).apply { setMargins(0, 110, 24, 0) })
+
+        // Push-to-talk mic button along the bottom-center.
+        micButton = TextView(this).apply {
+            text = "🎤 hold to talk"
+            textSize = 22f
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.argb(180, 30, 30, 35))
+            setPadding(48, 22, 48, 22)
+            setOnTouchListener { _, ev ->
+                when (ev.action) {
+                    android.view.MotionEvent.ACTION_DOWN -> { onMicDown(); true }
+                    android.view.MotionEvent.ACTION_UP,
+                    android.view.MotionEvent.ACTION_CANCEL -> { onMicUp(); true }
+                    else -> false
+                }
+            }
+        }
+        root.addView(micButton, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        ).apply { setMargins(0, 0, 0, 24) })
+
         setContentView(root)
+        updateVolumeDisplay()
+
+        // Eager TTS init so the first broadcast / button press doesn't get
+        // dropped while Pico is still booting. Also set the persisted
+        // volume so the device starts at the right level.
+        tts.applyVolume(tuning.ttsVolume)
 
         if (motors.open()) {
             motors.restingPose()
@@ -148,6 +197,69 @@ class MainActivity : AppCompatActivity() {
         } else {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
         }
+
+        // Initialise Vosk off the main thread (model load takes ~1s).
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_RECORD_AUDIO
+            )
+        }
+        Thread {
+            asr = AsrEngine(
+                modelPath = ASR_MODEL_PATH,
+                onFinal = { transcript -> handler.post { onTranscript(transcript) } },
+                onPartial = { partial ->
+                    handler.post { micButton.text = "🎤 …$partial" }
+                }
+            )
+            handler.post {
+                micButton.text = if (asr?.isReady == true) "🎤 hold to talk" else "🎤 (no model)"
+            }
+        }.start()
+    }
+
+    // ---------- Push-to-talk → ASR → LLM → TTS --------------------------------
+
+    private fun onMicDown() {
+        val a = asr ?: return
+        if (!a.isReady) return
+        // Mute TTS first; AudioRecord acquisition can flake if the output
+        // stream is still draining, so we give the audio framework a
+        // short beat before grabbing the mic.
+        try { tts.stop() } catch (_: Throwable) {}
+        micButton.text = "🎤 listening…"
+        handler.postDelayed({ a.startListening() }, 150)
+    }
+
+    private fun onMicUp() {
+        val a = asr ?: return
+        if (!a.isListening) return
+        a.stopListening()
+        micButton.text = "🎤 thinking…"
+    }
+
+    private fun onTranscript(text: String) {
+        Log.i(TAG, "user: $text")
+        micButton.text = "🎤 hold to talk"
+        // Run the LLM off-thread, then speak the result.
+        Thread {
+            if (!LlamaInference.isLoaded) {
+                if (!LlamaInference.load("/data/local/tmp/mabu.gguf", ctxSize = 1024, threads = 4)) {
+                    Log.e(TAG, "LLM model load failed")
+                    return@Thread
+                }
+            }
+            val prompt =
+                "<|im_start|>system\n${MABU_PERSONA}<|im_end|>\n" +
+                "<|im_start|>user\n$text<|im_end|>\n" +
+                "<|im_start|>assistant\n"
+            val t = System.currentTimeMillis()
+            val reply = LlamaInference.generate(prompt, maxTokens = 80).trim()
+            val dt = System.currentTimeMillis() - t
+            Log.i(TAG, "mabu (${dt}ms): $reply")
+            if (reply.isNotBlank()) handler.post { tts.speak(reply) }
+        }.start()
     }
 
     private fun calibrateCenter() {
@@ -275,7 +387,16 @@ class MainActivity : AppCompatActivity() {
         // Y offset (hardware mount) is applied uniformly in the gaze tick,
         // not here -- this writes the raw face-tracked target.
         followY = (0.5f + (fySmooth - calibCenterY) * tuning.gazeGain).coerceIn(0f, 1f)
-        targetNeckRot = 50f; targetNeckElev = 50f; targetNeckTilt = 50f
+
+        // Head follows gaze, scaled down so eyes do most of the work.
+        // Sign flips: neckRot uses the same unit-4 sign as puppet (the
+        // motor is inverted from mabu.py docs). neckElev uses the EYE Y
+        // direction *flipped* because neck_elev is NOT inverted on unit 4
+        // while the EUD eye motor is.
+        val s = tuning.neckFollowGain
+        targetNeckRot  = (50f + (followX - 0.5f) * 100f * s * tuning.neckRotSign).coerceIn(0f, 100f)
+        targetNeckElev = (50f + (0.5f - followY) * 100f * s * tuning.neckElevSign).coerceIn(0f, 100f)
+        targetNeckTilt = 50f
     }
 
     // ---------- PUPPET mode ---------------------------------------------------
@@ -513,12 +634,150 @@ class MainActivity : AppCompatActivity() {
         cameraSource?.release()
         try { motors.restingPose() } catch (_: Throwable) {}
         motors.close()
-        Log.i(TAG, "Released camera + motors")
+        try { tts.shutdown() } catch (_: Throwable) {}
+        try { asr?.release() } catch (_: Throwable) {}
+        Log.i(TAG, "Released camera + motors + tts + asr")
+    }
+
+    // ---------- Always-visible volume controls --------------------------------
+
+    private fun buildVolumePanel(): android.widget.LinearLayout {
+        val panel = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setBackgroundColor(Color.argb(140, 0, 0, 0))
+            setPadding(20, 10, 20, 10)
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        val plus = TextView(this).apply {
+            text = "+"; textSize = 26f
+            setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(20, 4, 20, 4)
+            setOnClickListener { adjustVolume(+1) }
+        }
+        volLevelView = TextView(this).apply {
+            text = "-/-"; textSize = 14f
+            setTextColor(Color.YELLOW); gravity = Gravity.CENTER
+        }
+        val minus = TextView(this).apply {
+            text = "−"; textSize = 26f
+            setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(20, 4, 20, 4)
+            setOnClickListener { adjustVolume(-1) }
+        }
+        panel.addView(plus)
+        panel.addView(volLevelView)
+        panel.addView(minus)
+        return panel
+    }
+
+    private fun adjustVolume(delta: Int) {
+        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+        val newLevel = (am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) + delta).coerceIn(0, max)
+        am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, newLevel, 0)
+        tuning.ttsVolume = newLevel.toFloat() / max
+        tuning.save(getSharedPreferences("tuning", MODE_PRIVATE))
+        updateVolumeDisplay()
+    }
+
+    private fun updateVolumeDisplay() {
+        if (!::volLevelView.isInitialized) return
+        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+        val cur = am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+        volLevelView.text = "$cur/$max"
+    }
+
+    // ---------- Dev broadcast receiver -- lets adb drive the app -------------
+    // Trigger from host:
+    //   adb shell am broadcast -a com.mabu.faceoverlay.SPEAK --es text "hello"
+    //   adb shell am broadcast -a com.mabu.faceoverlay.LLM --es prompt "Who are you?" --ez speak true
+    //   adb shell am broadcast -a com.mabu.faceoverlay.SET_MODE --es mode PUPPET
+
+    private val devReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(ctx: android.content.Context?, intent: android.content.Intent?) {
+            when (intent?.action) {
+                "com.mabu.faceoverlay.SPEAK" -> {
+                    val text = intent.getStringExtra("text") ?: return
+                    Log.i(TAG, "dev SPEAK: $text")
+                    tts.speak(text, tuning.ttsVolume)
+                }
+                "com.mabu.faceoverlay.LLM" -> {
+                    val prompt = intent.getStringExtra("prompt") ?: "Who are you?"
+                    val speak = intent.getBooleanExtra("speak", false)
+                    runDevLlm(prompt, speak)
+                }
+                "com.mabu.faceoverlay.SET_MODE" -> {
+                    val name = intent.getStringExtra("mode") ?: return
+                    val m = runCatching { Mode.valueOf(name.uppercase()) }.getOrNull() ?: return
+                    setMode(m)
+                }
+                "com.mabu.faceoverlay.SET_TTS_VOLUME" -> {
+                    val v = intent.getFloatExtra("volume", -1f)
+                    if (v >= 0f) {
+                        tuning.ttsVolume = v
+                        tts.applyVolume(v)
+                        settingsPanel.rebuildAfterPreset()
+                        updateVolumeDisplay()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun runDevLlm(userPrompt: String, alsoSpeak: Boolean) {
+        Thread {
+            val modelPath = "/data/local/tmp/mabu.gguf"
+            if (!LlamaInference.isLoaded) {
+                if (!LlamaInference.load(modelPath, ctxSize = 1024, threads = 4)) {
+                    Log.e(TAG, "dev LLM: model load failed")
+                    return@Thread
+                }
+            }
+            val full = "<|im_start|>system\nYou are Mabu, a small yellow social robot. " +
+                "Reply in one short sentence.<|im_end|>\n" +
+                "<|im_start|>user\n${userPrompt}<|im_end|>\n" +
+                "<|im_start|>assistant\n"
+            val t = System.currentTimeMillis()
+            val out = LlamaInference.generate(full, maxTokens = 64).trim()
+            Log.i(TAG, "dev LLM (${System.currentTimeMillis() - t}ms): $out")
+            if (alsoSpeak && out.isNotBlank()) {
+                handler.post { tts.speak(out, tuning.ttsVolume) }
+            }
+        }.start()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val f = android.content.IntentFilter().apply {
+            addAction("com.mabu.faceoverlay.SPEAK")
+            addAction("com.mabu.faceoverlay.LLM")
+            addAction("com.mabu.faceoverlay.SET_MODE")
+            addAction("com.mabu.faceoverlay.SET_TTS_VOLUME")
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(devReceiver, f, RECEIVER_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(devReceiver, f)
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        try { unregisterReceiver(devReceiver) } catch (_: Throwable) {}
     }
 
     companion object {
         private const val TAG = "MabuFaceOverlay"
         private const val REQ_CAMERA = 10
+        private const val REQ_RECORD_AUDIO = 11
+
+        private const val ASR_MODEL_PATH = "/sdcard/vosk-model-en"
+        private const val MABU_PERSONA =
+            "You are Mabu, a small yellow social robot watching the user from a tabletop. " +
+            "Speak in one short sentence -- warm, curious, a bit quirky. " +
+            "Never lecture or hedge. If you don't know, say so briefly."
 
         private const val HOLD_LAST_GAZE_MS = 1000L
         private const val HOLD_OVERLAY_MS = 500L

@@ -24,7 +24,8 @@ class SettingsPanel(
     private val onChanged: () -> Unit,
     private val onCalibrate: () -> Unit,
     private val onModeSelected: (Mode) -> Unit,
-    private val currentMode: () -> Mode
+    private val currentMode: () -> Mode,
+    private val onSpeak: (String) -> Unit
 ) : FrameLayout(context) {
 
     private val container: LinearLayout
@@ -53,6 +54,8 @@ class SettingsPanel(
         slider("Gaze gain",          0f,    2f,   { tuning.gazeGain }       , { tuning.gazeGain = it })
         slider("Gaze Y offset",     -0.3f,  0.3f, { tuning.gazeYOffset }    , { tuning.gazeYOffset = it })
         slider("Detection smoothing (EMA)", 0.1f, 0.9f, { tuning.emaAlpha } , { tuning.emaAlpha = it })
+        slider("FOLLOW head-turn (0=eyes only)", 0f, 1f,
+            { tuning.neckFollowGain }, { tuning.neckFollowGain = it })
 
         section("Motor tween")
         slider("Eye smoothness",     0.05f, 0.6f, { tuning.smoothAlphaEyes }, { tuning.smoothAlphaEyes = it })
@@ -82,9 +85,21 @@ class SettingsPanel(
         slider("Eye gaze gain (pupil)", 0.3f, 4f, { tuning.eyeGazeGain }, { tuning.eyeGazeGain = it })
         boolRow("Eyes follow pupil (vs head)", { tuning.useEyeGaze }, { tuning.useEyeGaze = it })
 
+        section("Voice")
+        slider("TTS volume", 0f, 1f, { tuning.ttsVolume }, { tuning.ttsVolume = it })
+
         section("Actions")
         button("Calibrate center (look at camera)") {
             onCalibrate()
+        }
+        button("LLM smoke test (loads model, generates)") {
+            runLlmSmokeTest()
+        }
+        button("TTS smoke test (Pico voice)") {
+            onSpeak("Hello, I am Mabu. I am a yellow robot.")
+        }
+        button("LLM → TTS (generate and speak)") {
+            runLlmAndSpeak()
         }
         button("Reset tuning (keep calibration)") {
             tuning.reset()
@@ -101,6 +116,70 @@ class SettingsPanel(
         button("Close") {
             visibility = View.GONE
         }
+    }
+
+    private fun runLlmAndSpeak() {
+        if (!LlamaInference.nativeAvailable()) {
+            android.widget.Toast.makeText(context,
+                "llama.cpp not compiled in", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        val modelPath = "/data/local/tmp/mabu.gguf"
+        val prompt =
+            "<|im_start|>system\nYou are Mabu, a small yellow social robot. " +
+            "Reply in one short sentence.<|im_end|>\n" +
+            "<|im_start|>user\nWhat are you looking at right now?<|im_end|>\n" +
+            "<|im_start|>assistant\n"
+        Thread {
+            if (!LlamaInference.isLoaded) {
+                val ok = LlamaInference.load(modelPath, ctxSize = 1024, threads = 4)
+                if (!ok) {
+                    post {
+                        android.widget.Toast.makeText(context,
+                            "Model load failed", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                    return@Thread
+                }
+            }
+            val t = System.currentTimeMillis()
+            val out = LlamaInference.generate(prompt, maxTokens = 64).trim()
+            val dt = System.currentTimeMillis() - t
+            android.util.Log.i("MabuLLM", "Gen ${dt}ms: $out")
+            if (out.isNotBlank()) post { onSpeak(out) }
+        }.start()
+    }
+
+    private fun runLlmSmokeTest() {
+        if (!LlamaInference.nativeAvailable()) {
+            android.widget.Toast.makeText(context,
+                "llama.cpp not compiled in -- run setup-llama.ps1 + rebuild",
+                android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        val modelPath = "/data/local/tmp/mabu.gguf"
+        val prompt =
+            "<|im_start|>system\nYou are Mabu, a small yellow social robot. Reply in one short sentence.<|im_end|>\n" +
+            "<|im_start|>user\nWho are you?<|im_end|>\n" +
+            "<|im_start|>assistant\n"
+        android.widget.Toast.makeText(context,
+            "Loading $modelPath ...", android.widget.Toast.LENGTH_SHORT).show()
+        Thread {
+            val t0 = System.currentTimeMillis()
+            val ok = LlamaInference.load(modelPath, ctxSize = 1024, threads = 4)
+            val tLoad = System.currentTimeMillis() - t0
+            android.util.Log.i("MabuLLM",
+                if (ok) "Loaded in ${tLoad}ms" else "Load FAILED for $modelPath")
+            if (!ok) return@Thread
+            val t1 = System.currentTimeMillis()
+            val out = LlamaInference.generate(prompt, maxTokens = 64)
+            val tGen = System.currentTimeMillis() - t1
+            android.util.Log.i("MabuLLM", "Gen in ${tGen}ms: $out")
+            post {
+                android.widget.Toast.makeText(context,
+                    out.ifBlank { "(empty result, check logcat)" },
+                    android.widget.Toast.LENGTH_LONG).show()
+            }
+        }.start()
     }
 
     private fun buildModeRow() {

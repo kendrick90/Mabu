@@ -75,6 +75,36 @@ adb pull /sdcard/overlay.png
 - `abiFilters = ["armeabi-v7a"]` — keeps the APK small and avoids
   shipping arm64 libs that wouldn't load on RK3288.
 
+## On-device LLM (llama.cpp)
+
+The app links against [llama.cpp](https://github.com/ggerganov/llama.cpp) so
+Mabu can run small quantized models on-device. The source is ~185 MB and
+**not vendored** — run `..\setup-llama.ps1` from the repo root once after
+a fresh clone:
+
+```powershell
+.\setup-llama.ps1   # shallow-clones into mabu-android/app/src/main/cpp/llama.cpp/
+```
+
+The CMake build picks it up automatically. If the directory is missing,
+the JNI compiles with stubs and `LlamaInference.nativeAvailable()` returns
+false.
+
+### Model file
+
+The smoke-test button looks for a model at `/data/local/tmp/mabu.gguf`.
+Recommended starter:
+
+- [Qwen2.5-0.5B-Instruct Q4_K_M](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF)
+  — ~320 MB, fits comfortably alongside face tracking
+
+```powershell
+adb -s 10.0.0.69:5555 push qwen2.5-0.5b-instruct-q4_k_m.gguf /data/local/tmp/mabu.gguf
+```
+
+Then tap **⚙ settings → LLM smoke test** and watch logcat (`-s MabuLLM`)
+for token-throughput numbers.
+
 ## Next demos worth trying after this works
 
 1. Drive motors from face detection — port the eye-tracking / blink-mirror

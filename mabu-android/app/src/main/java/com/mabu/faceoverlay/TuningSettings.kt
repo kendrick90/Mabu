@@ -34,6 +34,9 @@ class TuningSettings {
     var neckRotSign    = -1f
     var neckElevSign   =  1f
     var neckTiltSign   =  1f
+    /** How much the neck moves with the eyes in FOLLOW mode. 0 = head fixed,
+     *  eyes only; 1 = neck swings as much as eyes. ~0.4 looks natural. */
+    var neckFollowGain = 0.4f
     // Gain applied to the pupil-offset gaze vector (PUPPET mode eyes).
     // Pupils rarely swing to ±1 of the half-box; gain of ~1.5 maps a
     // half-swing to roughly the full motor range.
@@ -56,6 +59,11 @@ class TuningSettings {
      */
     var eyelidCoupling = 0.5f
 
+    /** Pico TTS ignores its own volume param so we set STREAM_MUSIC directly.
+     *  On Mabu's speaker 0.2-0.3 is comfortable. Physical volume buttons on
+     *  the tablet also adjust STREAM_MUSIC live between slider moves. */
+    var ttsVolume = 0.22f
+
     fun load(prefs: SharedPreferences) {
         gazeGain           = prefs.getFloat("gazeGain",           gazeGain)
         gazeYOffset        = prefs.getFloat("gazeYOffset",        gazeYOffset)
@@ -77,6 +85,8 @@ class TuningSettings {
         enableSaccades     = prefs.getBoolean("enableSaccades",   enableSaccades)
         enableGlances      = prefs.getBoolean("enableGlances",    enableGlances)
         eyelidCoupling     = prefs.getFloat("eyelidCoupling",     eyelidCoupling)
+        ttsVolume          = prefs.getFloat("ttsVolume",          ttsVolume)
+        neckFollowGain     = prefs.getFloat("neckFollowGain",     neckFollowGain)
     }
 
     fun save(prefs: SharedPreferences) {
@@ -101,6 +111,8 @@ class TuningSettings {
             putBoolean("enableSaccades",   enableSaccades)
             putBoolean("enableGlances",    enableGlances)
             putFloat("eyelidCoupling",     eyelidCoupling)
+            putFloat("ttsVolume",          ttsVolume)
+            putFloat("neckFollowGain",     neckFollowGain)
             apply()
         }
     }
@@ -128,6 +140,8 @@ class TuningSettings {
         enableSaccades     = true
         enableGlances      = true
         eyelidCoupling     = 0.5f
+        ttsVolume          = 0.22f
+        neckFollowGain     = 0.4f
     }
 
     /** Nuclear reset: blow away calibration too. Use only when re-installing. */
