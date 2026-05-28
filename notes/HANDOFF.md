@@ -211,10 +211,25 @@ flash" model:
 
 4. **Assembly-line procedure for new Mabus**:
    - Plug in via harness.
-   - Run `extract-mabu.ps1` -- liberate + ADB-pull Mabu IP to
-     mabu-archive/unit-<serial>/ (we have this procedure validated).
    - Run `flash-clean-firmware.ps1` -- one command, one harness cycle.
-   - Done. Close up.
+   - Close up.
+
+   No Mabu IP extraction needed on future units -- the software is
+   byte-identical to what we already captured from unit 3 (APKs +
+   animation CSVs in APK assets, native libs including libsercomm,
+   Nuance voice stack).
+
+   **Per-unit motor calibration:** lives in
+   /data/data/com.catalia.factorymode/ (owner-only, shell can't read)
+   AND gets wiped on flash. Instead of engineering a privileged-helper
+   APK to extract it before flashing, the cleaner answer is to BUNDLE
+   com.catalia.factorymode.apk (already in mabu-archive) in the clean
+   firmware. On a flashed unit, the user opens factory mode and runs
+   its built-in calibration wizard, which rederives the motor zeros and
+   writes them to the freshly-formatted /data/data/com.catalia.factorymode/.
+   The robot's hardware doesn't care whether the calibration values
+   were extracted or freshly re-measured -- it just needs SOME current
+   values.
 
 **App-store choice:** install Aurora Store via F-Droid on the
 template-donor (unit 2) before dumping. Aurora provides Play-Store-
