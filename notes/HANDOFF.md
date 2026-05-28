@@ -3,7 +3,39 @@
 Long-running project. Goal: **remove Esper Device Owner kiosk from an
 RK3288 Android 8.1 tablet** so the user can repurpose it.
 
-## Latest status (2026-05-27 session)
+## Latest status (2026-05-27 session, continued)
+
+**All three units now on the same template.** Validated the procedure end-to-end
+on units 1 and 3 after first proving it on unit 2.
+
+**Key new finding: EOCD-without-wipe DOES NOT WORK on active Esper.** We
+tested skipping the /data wipe on unit 3 (a fully provisioned Esper unit) and
+applying only the 8 sector patches. Result: kiosk Dashboard still came up.
+Reason: `io.shoonya.shoonyadpc` (the actual DPC binary) is installed by Esper
+provisioning to `/data/app/`, NOT to `/system/`. Our /system EOCD nukes only
+neutralize the three /system Esper APKs (esperdpc / esperhelper /
+espersupervisor) — they cannot touch /data/app/io.shoonya.shoonyadpc-*/. And
+soft uninstall is blocked by DPM (`SecurityException: Attempt to remove
+non-test admin`). **Therefore: always pair the patches with a 96 MB /data
+head wipe on active-Esper units.** Patches-only suffices ONLY on units that
+are already factory-reset (Esper DO ref but no kiosk policies in /data).
+
+**Unit 1 specifics:** USB ADB is permanently wedged on this unit even after
+factory reset + full patches. Symptom: device enumerates, but adb handshake
+never completes (`device offline`). Cause unknown; not related to /data
+state. Use WiFi ADB instead. Also confirmed that Dev Options crash is NOT
+fixed by factory reset, so it's not a /data-state issue — it's deeper, in
+`Settings.apk` dex or the precompiled SELinux policy.
+
+**Procedure validated:**
+- Unit 1: factory-reset Mabu, re-applied 8 patches via flash-mabu/liberate.
+- Unit 2: scrubbed in earlier session; assembly-line template.
+- Unit 3: active Esper Mabu, wipe + 8 patches + reinstall apps.
+
+Added `scripts/flash-mabu.ps1` — single command for fresh-Esper units:
+  `.\scripts\flash-mabu.ps1 -WipeData -RestoreMabu`
+
+## Earlier in this session (2026-05-27)
 
 **Unit 2 is fully scrubbed and is now the validated "template state".** Path A
 strategy locked: byte-patch only, no /system dump-and-flash needed.
