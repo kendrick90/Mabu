@@ -12,8 +12,8 @@ RK3288 Android 8.1 tablet** so the user can repurpose it.
 ## Session 2026-05-28: assembly-line refinements + unit 1 mystery
 
 **Built `scripts/restore-adb-auth.ps1`** — reverts the two adbd auth
-patches (writes back `dumps/adbd-authreq-orig.bin` and
-`dumps/adbd-authinit-orig.bin` to LBAs 1696240 and 1694778). Use this
+patches (writes back `firmware/originals/adbd-authreq-orig.bin` and
+`firmware/originals/adbd-authinit-orig.bin` to LBAs 1696240 and 1694778). Use this
 when finalizing a unit for deployment on an untrusted network: tablet
 returns to standard Android "Allow ADB debugging from this computer?"
 dialog on first connection. Tested on unit 1: works, both USB and WiFi

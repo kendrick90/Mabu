@@ -160,5 +160,7 @@ by /data reformat.
   dumpsys outputs). The factorymode.apk + animations source for restore.
 - `tools/`  — downloaded tooling (rkdeveloptool, Rockchip drivers, Zadig).
   Gitignored.
-- `dumps/`  — partition dumps and patch payloads. Gitignored to avoid
-  publishing firmware-derived bytes.
+- `firmware/`  — captured + modified eMMC bytes. `patches/` and
+  `originals/` are committed (scripts can't run without them);
+  `system-probes/` and `scratch/` are gitignored. See
+  `firmware/README.md` for the full inventory.
