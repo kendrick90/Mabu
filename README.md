@@ -35,8 +35,7 @@ inside the box.
 
 ### 30-pin header pinout (2 × 15)
 
-Fine pitch (sub-2.54 mm — measure before sourcing connectors). Pin 1
-location TBD on first inspection.
+**2 mm pitch** (2 × 15, dual-row). Pin 1 location TBD on first inspection.
 
 | Col A | Pin |  | Pin | Col B    |
 |-------|-----|--|-----|----------|
