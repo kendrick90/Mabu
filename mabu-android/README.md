@@ -146,13 +146,90 @@ adb shell screencap -p /sdcard/overlay.png
 adb pull /sdcard/overlay.png
 ```
 
-## App structure
+## What the app does
+
+### Modes (tap anywhere on the preview to cycle; `⚙ → Mode` for direct select)
+
+- **FOLLOW** — eyes (and head, scaled by `neckFollowGain`) track the
+  user's face. Saccades, glances and spontaneous blinks layered on top so
+  Mabu doesn't look statue-frozen between detections.
+- **PUPPET** — Mabu mirrors you. Head Euler angles drive the neck; pupil
+  position (heuristic dark-cluster detection on each eye crop) drives the
+  eye motors; eye-open probabilities drive the eyelids, so closing one eye
+  closes Mabu's matching eyelid.
+- **IDLE** — no face input. Saccades + glances + blinks fire on a
+  centered baseline. "Robot is alive and waiting".
+- **SLEEP** — eyelids closed, all motors centered, no animations.
+
+### Behavior as a behavior soup
+
+Modes are *presets*: tapping one writes a combination of à la carte
+behavior flags that you can then override individually under
+`⚙ → Behaviors`. Switches for **Saccades**, **Glances** and a 4-way
+**Blink method** (`spontaneous` / `mirror` / `both` / `none`) let you
+mix things like "PUPPET, but also do spontaneous blinks" or "FOLLOW
+with mirror eyelids".
+
+### Voice loop
+
+Hold the 🎤 button at the bottom-center. Mabu transcribes (Vosk, offline,
+~1 s), generates a reply (Qwen2.5-0.5B via llama.cpp, ~5-10 s for a
+short reply on RK3288), and speaks it (Pico TTS). The button shows the
+partial Vosk transcript live so you can see what's being heard.
+
+The mic momentarily mutes any in-progress TTS so Mabu doesn't transcribe
+its own voice.
+
+### Settings panel (`⚙` top-right)
+
+- **Mode** — preset buttons for the four modes above
+- **Gaze** — gain, Y offset, detection EMA smoothing, head-turn-in-FOLLOW
+- **Motor tween** — eye / neck easing alphas
+- **Behaviors** — saccade / glance toggles, blink method radio, eyelid coupling slider
+- **Lifelike tuning** — amplitudes and intervals for the animations
+- **Puppet** — neck angle range, three sign flips (rotation / elevation
+  / tilt) for the wired motor direction on your unit, pupil gain, head-vs-pupil eye source toggle
+- **Voice** — TTS volume
+- **Actions** — calibrate center, LLM / TTS smoke tests, reset
+
+The volume **+/−** panel under the gear is always visible because the
+Mabu has no physical rocker. Tapping it adjusts STREAM_MUSIC which both
+TTS and any future audio playback share.
+
+### Per-unit calibration
+
+Different Mabu units have different motor polarity. **Unit 4** in this
+repo's matrix has these inversions vs. mabu.py's documented convention:
+
+- Eyelid scale inverted (5 = open, 50 = half-closed)
+- EUD (eyes up/down) inverted
+- Neck rotation inverted (`NECK_ROT_SIGN = -1`)
+- Neck elevation + tilt match docs
+
+The three sign flips under `⚙ → Puppet` let you correct any axis that
+turns the wrong way on **your** unit. The `gazeYOffset` slider biases
+all eye-target sources upward to compensate for the tablet being
+physically mounted below the eye axis.
+
+The "Reset tuning" button preserves these calibration values. "Reset
+all" wipes them — only use on a different unit.
+
+## App structure (source)
 
 | File | Role |
 |---|---|
-| `MainActivity.kt` | Bootstraps CameraX, requests CAMERA permission, wires the front camera into a `PreviewView` and an `ImageAnalysis` analyzer. |
-| `FaceAnalyzer.kt` | `ImageAnalysis.Analyzer` that runs ML Kit Face Detection (FAST mode, contours + landmarks + classification). Returns `FaceResult` to the overlay. |
-| `FaceOverlayView.kt` | Custom `View` over the preview. Maps ML Kit's image-space coordinates to view-space accounting for FILL_CENTER scaling and front-camera mirror. Draws box / contours / landmarks / probability text. |
+| `MainActivity.kt` | Bootstraps everything: camera, motors, TTS, ASR, LLM, settings panel, mic + volume UI, dev broadcasts, mode dispatch. |
+| `Camera1Source.kt` | Camera1 API wrapper feeding NV21 frames into `FaceAnalyzer`. We can't use CameraX / Camera2 because Mabu's HAL is a Camera1 shim. |
+| `FaceAnalyzer.kt` | ML Kit Face Detection (FAST mode, landmarks + classification). Also runs the heuristic dark-cluster pupil detector and produces the cropped face bitmap for the inset. |
+| `FaceOverlayView.kt` | Draws the bounding box, landmarks, gaze arrows, classification probabilities on the main preview, plus the clean face close-up in the top-left inset. |
+| `AttentionTracker.kt` | When multiple faces are visible, picks the "primary" one by size + center proximity + camera-facing + sticky hysteresis. |
+| `MabuMotors.kt` | Kotlin port of `../mabu-app/mabu.py`. Fletcher-8 checksum + multi-motor frames. |
+| `cpp/serial.c` + `SerialPort.kt` | Tiny JNI shim: termios setup of `/dev/ttyS1` at 57600 8N1 and `write(2)`. |
+| `cpp/llama_jni.cpp` + `LlamaInference.kt` | llama.cpp wrapped for Kotlin -- load model, generate, release. |
+| `AsrEngine.kt` | Vosk wrapper. Loads model on init, single `SpeechService` held alive across press cycles. |
+| `TtsHelper.kt` | Android `TextToSpeech` wrapper. Volume goes via STREAM_MUSIC because Pico ignores its own volume param. |
+| `TuningSettings.kt` + `SettingsPanel.kt` | Persisted tuning values backed by `SharedPreferences`, and the programmatic settings UI built on top of them. |
+| `Mode.kt` | The four-mode enum. |
 
 ## Constraints baked into the Gradle config
 
