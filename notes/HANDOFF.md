@@ -9,6 +9,76 @@
 Long-running project. Goal: **remove Esper Device Owner kiosk from an
 RK3288 Android 8.1 tablet** so the user can repurpose it.
 
+## Session 2026-05-28: assembly-line refinements + unit 1 mystery
+
+**Built `scripts/restore-adb-auth.ps1`** — reverts the two adbd auth
+patches (writes back `dumps/adbd-authreq-orig.bin` and
+`dumps/adbd-authinit-orig.bin` to LBAs 1696240 and 1694778). Use this
+when finalizing a unit for deployment on an untrusted network: tablet
+returns to standard Android "Allow ADB debugging from this computer?"
+dialog on first connection. Tested on unit 1: works, both USB and WiFi
+ADB sit at `unauthorized` until the dialog is tapped on the touch UI.
+**Caveat:** the dialog is shown by SystemUI, but if Settings is broken
+(unit 1 Dev Options crash), the user may not be able to find it.
+
+**flash-mabu.ps1 fixed for the inter-phase Loader wedge.** Bug
+discovered on unit 4: doing 8 small patch writes followed by a 16 MB
+wipe write in the same Loader session causes the first wipe chunk to
+fail with "Read LBA failed" — Loader wedges after the patches. Fix:
+between patch and wipe phases, do `rd` + wait for adb + `adb shell
+reboot loader` to re-enter Loader fresh. Adds ~30s to the flow but
+makes it reliable.
+
+**Unit 4 added to the fleet** (serial 2022010501557, IP 10.0.0.69).
+Standard fresh-Esper unit, full flash-mabu run was the validation
+target for the unified script after the wedge-bug fix.
+
+**Unit 1 Dev Options crash: ROOT CAUSE STILL UNKNOWN.** Repeated the
+full wipe-and-reimage on unit 1 (Loader-side 96 MB /data zero, then
+full liberation + app install). Dev Options STILL crashes with the
+same SELinux denial: `avc: denied { read } for
+name="u:object_r:logpersistd_logging_prop:s0" scontext=u:r:system_app:s0
+... permissive=0` at `DevelopmentSettings.setLogpersistOff() ->
+SystemProperties.set()` in onResume.
+
+What we ruled out by direct hash comparison between unit 1 and unit 4
+(where Dev Options works fine):
+- Settings.apk: same sha256
+- Settings.odex / Settings.vdex (compiled bytecode): same
+- /system/etc/selinux/plat_property_contexts: same
+- /vendor/etc/selinux/precompiled_sepolicy: same
+- /vendor/etc/selinux/nonplat_property_contexts: same
+- All /system/etc/init/*.rc: same
+- All `ro.boot.*` and `ro.product.*` and `ro.build.*` props: same
+- /data was freshly wiped on both via the same 96 MB Loader procedure
+- Both had freshly-reinstalled F-Droid + Lawnchair + factorymode
+
+Remaining hypotheses (none investigated, would need root):
+- /persist or another OEM partition with per-unit data that gates SELinux
+  policy load behavior
+- Hardware difference (eMMC chip vendor / kernel device tree) affecting
+  property context registration at boot
+- Some firmware-level configuration baked into u-boot or kernel image
+  for this specific unit
+
+**Decision: defer indefinitely.** Use ADB shell for anything Dev Options
+would do. Settings.apk dex patching needs the platform signing key which
+we don't have.
+
+**Antenna investigation (unit 3):** Confirmed Quectel EC21-AFAR LTE
+modem is present, SIM is in (CPIN: READY), and 4 LTE operators are
+visible (AT&T x2, Verizon, FirstNet). One of the two antennas in the
+body is WiFi-tuned, the other is LTE-tuned. Swap test showed
+**6.7 dB WiFi RSSI drop** when antennas are in the "wrong" ports
+(−67 dBm → −74 dBm) — definitive evidence they're differently tuned.
+However a third attempt at the "correct" config gave −77 dBm, suggesting
+either a flaky IPEX/MHF connector or position-inside-body matters. User
+verified both connectors are firmly clicked; cause of variance unresolved.
+**Conclusion: one of the two antenna ports drives WiFi, the other LTE.
+Label them once and don't swap.** AT command interface via
+/dev/ttyUSB2 was discovered as the way to talk to the Quectel modem;
+useful for any future modem-side diagnostics.
+
 ## Latest status (2026-05-27 session, continued)
 
 **All three units now on the same template.** Validated the procedure end-to-end

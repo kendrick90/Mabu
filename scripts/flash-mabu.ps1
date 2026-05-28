@@ -101,7 +101,26 @@ if ($LASTEXITCODE -ne 0) { Fail 'liberate-mabu.ps1 failed.'; exit 1 }
 Ok 'All 8 patches written.'
 
 # --- Phase 3: Optional /data wipe ---
+# A single Loader session can do all 8 small patch writes OR a 96 MB wipe,
+# but doing patches+wipe back-to-back wedges Loader on the first wipe chunk.
+# Workaround: reset between phases. This means rebooting to Android,
+# letting adb come up, then `reboot loader` to re-enter Loader fresh.
 if ($WipeData) {
+    Section 'Resetting Loader between patch and wipe phases'
+    Info 'Loader wedges if we do patches + 16 MB write back-to-back.'
+    Info 'Booting to Android, then re-entering Loader via adb.'
+    & $RK rd 2>&1 | Out-Null
+    Start-Sleep -Seconds 4
+    $bootDev = Find-AdbDevice -PreferIp $WifiIp -TimeoutSec 120
+    if (-not $bootDev) { Fail 'No adb after inter-phase reset. Power-cycle and retry.'; exit 1 }
+    Ok "adb up at $bootDev"
+    & $ADB -s $bootDev shell reboot loader 2>&1 | Out-Null
+    for ($i = 0; $i -lt 30; $i++) {
+        Start-Sleep -Seconds 1
+        if (Test-Loader) { Ok "Loader re-caught after ${i}s."; break }
+    }
+    if (-not (Test-Loader)) { Fail 'Loader not re-caught.'; exit 1 }
+
     Section "Wiping head of /data ($WipeMB MB)"
     & (Join-Path $Root 'scripts/wipe-data-head.ps1') -SizeMB $WipeMB
     if ($LASTEXITCODE -ne 0) { Fail '/data head wipe failed.'; exit 1 }

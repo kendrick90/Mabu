@@ -110,9 +110,10 @@ by /data reformat.
 
 | Unit | Serial | DO | Esper | USB ADB | WiFi ADB | Notes |
 |---|---|---|---|---|---|---|
-| 1 | 2022010502079 | clear | clean | wedges (offline after handshake) | works | Dev Options crashes — Settings.apk dex or precompiled SELinux issue, deferred |
+| 1 | 2022010502079 | clear | clean | wedges (offline after handshake) | 10.0.0.161 | Dev Options crashes; cause unknown despite byte-identical /system with units 2-4 |
 | 2 | 2022010500480 | clear | clean | works | 10.0.0.147 | Template reference. Dev Options OK |
-| 3 | 2022010501476 | clear | clean | works | TBD post-wifi-setup | Just liberated |
+| 3 | 2022010501476 | clear | clean | works | 10.0.0.252 | Liberated; SIM + Quectel LTE modem present |
+| 4 | 2022010501557 | clear | clean | works | 10.0.0.69 | Liberated via flash-mabu.ps1 |
 
 ## Caveats / known limits
 
@@ -120,10 +121,20 @@ by /data reformat.
   patient-facing Mabu conversational software is not in any captured /data
   on any of three units — presumed Esper-deployed only at provisioning
   time, never persisted across factory reset.
-- **Dev Options crashes on unit 1.** Cause is in /system, not /data.
-  Workarounds: use ADB shell for everything Dev Options does, or
-  install Activity Launcher to skip the broken sub-page. Patching
-  Settings.apk dex is possible but unimplemented.
+- **Dev Options crashes on unit 1.** *Cause unknown.* /system, /vendor,
+  Settings.apk, Settings.odex, sepolicy binaries, kernel boot args, and
+  all `ro.boot.*` props are byte-identical between unit 1 and units 2/3/4
+  where Dev Options works. /data was wiped fresh on both unit 1 and unit 4
+  via the same 96 MB Loader-side procedure; unit 1 still crashes, unit 4
+  doesn't. The exact crash is an SELinux denial:
+  `avc: denied { read } for name="u:object_r:logpersistd_logging_prop:s0"
+  scontext=u:r:system_app:s0 ... permissive=0` triggered by
+  `DevelopmentSettings.setLogpersistOff() -> SystemProperties.set()` in
+  `onResume`. Why this only triggers on unit 1 with identical bytes
+  everywhere is an open mystery — possibly /persist or another OEM
+  partition we haven't probed, or hardware-baked SELinux load order.
+  Workaround: use ADB shell for anything Dev Options would do. Patching
+  Settings.apk dex requires the platform signing key (we don't have).
 - **USB ADB unreliable on unit 1.** Enumerates, then sits as `offline`
   forever. Cause unknown. WiFi ADB is the stable transport on this
   build regardless — the parameter file already includes
