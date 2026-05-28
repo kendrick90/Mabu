@@ -51,9 +51,27 @@ What was done this session:
    `.\scripts\wipe-data-head.ps1 -SizeMB 96 -Reset` to clear stale
    kiosk policies. Skip for factory-reset units.
 5. Wait for Android boot, `adb connect <tablet-ip>:5555`.
-6. `adb install apks/F-Droid.apk apks/Lawnchair.apk` and
-   `adb shell cmd package set-home-activity app.lawnchair/.LawnchairLauncher`.
-7. Close up the unit.
+6. Install user-facing apps:
+   ```
+   adb install apks/F-Droid.apk
+   adb install apks/Lawnchair.apk
+   adb shell cmd package set-home-activity app.lawnchair/.LawnchairLauncher
+   ```
+7. Restore Mabu factory mode + assets (if desired):
+   ```
+   adb install mabu-archive/unit-2022010501476/apks/com.catalia.factorymode.apk
+   for perm in CAMERA RECORD_AUDIO READ_PHONE_STATE READ_EXTERNAL_STORAGE WRITE_EXTERNAL_STORAGE; do
+     adb shell pm grant com.catalia.factorymode "android.permission.$perm"
+   done
+   adb push mabu-archive/unit-2022010501476/sdcard/sdcard/*.csv  /sdcard/
+   adb push mabu-archive/unit-2022010501476/sdcard/sdcard/nuance /sdcard/
+   adb push mabu-archive/unit-2022010501476/sdcard/sdcard/sound.raw /sdcard/
+   ```
+   (Use PowerShell, not git-bash — git-bash mangles `/sdcard/` to a
+   Windows path. ADB push from bash needs `MSYS_NO_PATHCONV=1`.)
+8. Motor calibration: launch Factory Mode → Trouble Shooting/Motor Debug,
+   run the calibration wizard. Per-unit, can't be cloned.
+9. Close up the unit.
 
 This works because every Mabu we've seen has byte-identical /system (same
 H7R 8.1.0 build dated Mar 2022). If a unit ever ships with a different
@@ -66,8 +84,30 @@ build, the cycled dumper falls back to dump-and-flash.
 - /system Esper APKs: corrupted EOCDs (PackageManager skips)
 - /system init scripts: init.esper.rc + set-device-owner.sh both
   zeroed (init parses no Esper service)
-- Launcher: Lawnchair 15 Beta 3
-- Other apps: F-Droid
+- Launcher: Lawnchair 15 Beta 3 (sideloaded from IzzyOnDroid)
+- App store: F-Droid
+- Mabu: com.catalia.factorymode installed from unit-3 archive,
+  all runtime perms granted, launches to "Mabu Factory Mode"
+  diagnostic UI (Reliability Test / Trouble Shooting / Motor Debug /
+  Assembly Testing / Clear Test Data / Settings / Shut Down)
+- /sdcard restored from unit-3 archive: 7 animation CSVs
+  (Alternate_Winks, Eye_Roll_Fast_CW, Eye_Roll_Slow_CCW, Half_Close,
+  Neck_Elevation_Stretch, Neck_Roll, Neck_Tilt_Stretch), nuance/
+  speechRec (Mandarin acoustic model + ZeroTen grammar), sound.raw
+
+**About "Lightning" preinstalled:** /system/app/Lightning is
+`acr.browser.barebones` — a minimal web browser preinstalled by
+Catalia/Rockchip in the stock Mabu firmware. Not a launcher. Left
+in place (user choice).
+
+**Consumer Mabu app caveat:** the unit-3 archive only contains
+`com.catalia.factorymode` (the factory-test app — its activity class
+is `com.catalia.mabu.navigation.MainActivity`, which misleadingly
+suggests it's the consumer app). The patient-facing Mabu conversational
+software is NOT in the archive. It was likely Esper-provisioned post
+factory-reset on production units and never captured. So a "cloned" Mabu
+from this template will have motor/sensor diagnostics and animations
+but no consumer conversation flow.
 
 ## Previous status (2026-05-25 session 2)
 
