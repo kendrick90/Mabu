@@ -1,0 +1,12 @@
+.gradle/
+build/
+.idea/
+*.iml
+local.properties
+.cxx/
+captures/
+*.log
+.DS_Store
+# Dev screenshots contain the user's face -- keep them local. Curated
+# screenshots can be opted in explicitly with `git add -f`.
+screenshots/

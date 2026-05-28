@@ -1,0 +1,543 @@
+package com.mabu.faceoverlay
+
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.graphics.Color
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
+import android.view.Gravity
+import android.view.TextureView
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var textureView: TextureView
+    private lateinit var overlayView: FaceOverlayView
+    private lateinit var settingsPanel: SettingsPanel
+    private var cameraSource: Camera1Source? = null
+    private val motors = MabuMotors()
+    private val handler = Handler(Looper.getMainLooper())
+
+    private val tuning = TuningSettings()
+
+    @Volatile private var mode = Mode.FOLLOW
+
+    // Detection-side EMA on face center (FOLLOW).
+    private var fxSmooth = 0.5f
+    private var fySmooth = 0.5f
+
+    // Calibration captured by long-press / settings button.
+    private var calibCenterX = 0.5f
+    private var calibCenterY = 0.5f
+
+    // Eye target/current (gaze tween). FOLLOW computes effective target
+    // each tick from followX/Y + saccade + glance offsets.
+    @Volatile private var targetX = 0.5f
+    @Volatile private var targetY = 0.5f
+    @Volatile private var followX = 0.5f
+    @Volatile private var followY = 0.5f
+    @Volatile private var saccadeOffsetX = 0f
+    @Volatile private var saccadeOffsetY = 0f
+    @Volatile private var glanceOffsetX = 0f
+    @Volatile private var glanceOffsetY = 0f
+    private var currentX = 0.5f
+    private var currentY = 0.5f
+    private var lastSentX = 0.5f
+    private var lastSentY = 0.5f
+
+    // Neck target/current.
+    @Volatile private var targetNeckRot = 50f
+    @Volatile private var targetNeckElev = 50f
+    @Volatile private var targetNeckTilt = 50f
+    private var currentNeckRot = 50f
+    private var currentNeckElev = 50f
+    private var currentNeckTilt = 50f
+    private var lastSentNeckRot = 50f
+    private var lastSentNeckElev = 50f
+    private var lastSentNeckTilt = 50f
+
+    // Eyelid (PUPPET direct write; FOLLOW via blink only). Tracked
+    // independently per side so each robot eyelid mirrors the matching
+    // user eye -- closing one eye in PUPPET winks just one robot eye.
+    private var lastLdlValue = MabuMotors.EYELID_NEUTRAL
+    private var lastLdrValue = MabuMotors.EYELID_NEUTRAL
+
+    private var lastFaceSeenMs = 0L
+    private var lastOverlayFaceMs = 0L
+    private var gazeLogCounter = 0
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val prefs = getSharedPreferences("tuning", Context.MODE_PRIVATE)
+        tuning.load(prefs)
+
+        val root = FrameLayout(this)
+        textureView = TextureView(this)
+        overlayView = FaceOverlayView(this)
+        val full = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        )
+        root.addView(textureView, full)
+        root.addView(overlayView, full)
+        textureView.scaleX = -1f
+        root.setOnClickListener {
+            if (settingsPanel.visibility == android.view.View.VISIBLE) {
+                settingsPanel.visibility = android.view.View.GONE
+            } else {
+                setMode(mode.next())
+            }
+        }
+
+        // Settings panel (right side, 45 % of screen width)
+        settingsPanel = SettingsPanel(this, tuning,
+            onChanged = { tuning.save(prefs) },
+            onCalibrate = { calibrateCenter() },
+            onModeSelected = { setMode(it) },
+            currentMode = { mode }
+        )
+        root.addView(settingsPanel, FrameLayout.LayoutParams(
+            (resources.displayMetrics.widthPixels * 0.45f).toInt(),
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            Gravity.END
+        ))
+
+        // Settings gear button (top-right). Single glyph; styling kept
+        // small/subtle so it doesn't fight with the camera preview.
+        val gearBtn = TextView(this).apply {
+            text = "⚙"
+            textSize = 22f
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.argb(140, 0, 0, 0))
+            setPadding(22, 10, 22, 12)
+            setOnClickListener { settingsPanel.toggle() }
+        }
+        val gearLp = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.END
+        )
+        gearLp.setMargins(0, 24, 24, 0)
+        root.addView(gearBtn, gearLp)
+
+        setContentView(root)
+
+        if (motors.open()) {
+            motors.restingPose()
+            handler.post(gazeTickRunnable)
+            handler.postDelayed(blinkRunnable, 2500)
+            handler.postDelayed(saccadeRunnable, 1500)
+            handler.postDelayed(glanceRunnable, 7000)
+        } else {
+            Toast.makeText(this, "Motor open failed -- face overlay only", Toast.LENGTH_LONG).show()
+        }
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED) {
+            startCamera()
+        } else {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+        }
+    }
+
+    private fun calibrateCenter() {
+        calibCenterX = fxSmooth
+        calibCenterY = fySmooth
+        val msg = "Calibrated: (${"%.2f".format(calibCenterX)}, ${"%.2f".format(calibCenterY)})"
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        Log.i(TAG, msg)
+    }
+
+    private fun setMode(newMode: Mode) {
+        if (newMode == mode) return
+        mode = newMode
+        // Apply preset behavior flags. User can then override any of them
+        // in the settings panel without changing mode.
+        when (newMode) {
+            Mode.FOLLOW -> {
+                tuning.blinkMethod = "spontaneous"
+                tuning.enableSaccades = true
+                tuning.enableGlances = true
+                targetNeckRot = 50f; targetNeckElev = 50f; targetNeckTilt = 50f
+                resetEyelidsToNeutral()
+            }
+            Mode.PUPPET -> {
+                tuning.blinkMethod = "mirror"
+                tuning.enableSaccades = false
+                tuning.enableGlances = false
+                // puppet path will continuously drive eyes / neck / eyelids
+            }
+            Mode.IDLE -> {
+                tuning.blinkMethod = "spontaneous"
+                tuning.enableSaccades = true
+                tuning.enableGlances = true
+                targetNeckRot = 50f; targetNeckElev = 50f; targetNeckTilt = 50f
+                followX = 0.5f; followY = 0.5f
+                resetEyelidsToNeutral()
+            }
+            Mode.SLEEP -> {
+                tuning.blinkMethod = "none"
+                tuning.enableSaccades = false
+                tuning.enableGlances = false
+                targetNeckRot = 50f; targetNeckElev = 50f; targetNeckTilt = 50f
+                followX = 0.5f; followY = 0.5f
+                targetX = 0.5f; targetY = 0.5f
+                saccadeOffsetX = 0f; saccadeOffsetY = 0f
+                glanceOffsetX = 0f; glanceOffsetY = 0f
+                lastLdlValue = MabuMotors.EYELID_CLOSED
+                lastLdrValue = MabuMotors.EYELID_CLOSED
+                motors.move(
+                    eyelidLeft = MabuMotors.EYELID_CLOSED,
+                    eyelidRight = MabuMotors.EYELID_CLOSED
+                )
+            }
+        }
+        settingsPanel.rebuildAfterPreset()
+        Toast.makeText(this, "Mode: ${mode.name}", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun resetEyelidsToNeutral() {
+        lastLdlValue = MabuMotors.EYELID_NEUTRAL
+        lastLdrValue = MabuMotors.EYELID_NEUTRAL
+        motors.move(
+            eyelidLeft = MabuMotors.EYELID_NEUTRAL,
+            eyelidRight = MabuMotors.EYELID_NEUTRAL
+        )
+    }
+
+    private fun startCamera() {
+        val analyzer = FaceAnalyzer { result ->
+            if (result.faces.isNotEmpty()) {
+                overlayView.setResult(result, isFrontFacing = true)
+                lastOverlayFaceMs = SystemClock.uptimeMillis()
+            } else if (SystemClock.uptimeMillis() - lastOverlayFaceMs > HOLD_OVERLAY_MS) {
+                overlayView.setResult(result, isFrontFacing = true)
+            }
+            when (mode) {
+                Mode.FOLLOW -> updateFollowFrom(result)
+                Mode.PUPPET -> updatePuppetFrom(result)
+                Mode.IDLE, Mode.SLEEP -> { /* ignore face input */ }
+            }
+            // Eyelid mirror is independent of mode -- if the user enabled
+            // "mirror" or "both" blink method, mirror runs on top of the
+            // mode's existing eyelid behavior. SLEEP overrides by keeping
+            // eyelids closed (no detection input drives them).
+            if (mode != Mode.SLEEP &&
+                (tuning.blinkMethod == "mirror" || tuning.blinkMethod == "both")) {
+                maybeMirrorEyelids(result)
+            }
+        }
+        cameraSource = Camera1Source(this, textureView, analyzer)
+    }
+
+    // ---------- FOLLOW mode ----------------------------------------------------
+
+    private fun updateFollowFrom(result: FaceResult) {
+        val w = result.imageWidth.toFloat()
+        val h = result.imageHeight.toFloat()
+        if (w <= 0f || h <= 0f) return
+
+        val face = result.faces.firstOrNull()
+        val now = SystemClock.uptimeMillis()
+
+        if (face == null) {
+            if (now - lastFaceSeenMs > HOLD_LAST_GAZE_MS) {
+                val a = tuning.emaAlpha
+                fxSmooth = a * 0.5f + (1f - a) * fxSmooth
+                fySmooth = a * 0.5f + (1f - a) * fySmooth
+                writeFollowTarget()
+            }
+            return
+        }
+
+        lastFaceSeenMs = now
+        val rect = face.boundingBox
+        val cx = ((rect.left + rect.right) * 0.5f / w).coerceIn(0f, 1f)
+        val cy = ((rect.top + rect.bottom) * 0.5f / h).coerceIn(0f, 1f)
+        val a = tuning.emaAlpha
+        fxSmooth = a * cx + (1f - a) * fxSmooth
+        fySmooth = a * cy + (1f - a) * fySmooth
+        writeFollowTarget()
+    }
+
+    private fun writeFollowTarget() {
+        followX = (0.5f + (fxSmooth - calibCenterX) * tuning.gazeGain).coerceIn(0f, 1f)
+        // Y offset (hardware mount) is applied uniformly in the gaze tick,
+        // not here -- this writes the raw face-tracked target.
+        followY = (0.5f + (fySmooth - calibCenterY) * tuning.gazeGain).coerceIn(0f, 1f)
+        targetNeckRot = 50f; targetNeckElev = 50f; targetNeckTilt = 50f
+    }
+
+    // ---------- PUPPET mode ---------------------------------------------------
+
+    private fun updatePuppetFrom(result: FaceResult) {
+        val face = result.faces.firstOrNull() ?: return
+        lastFaceSeenMs = SystemClock.uptimeMillis()
+
+        val yaw   = face.headEulerAngleY
+        val pitch = face.headEulerAngleX
+        val roll  = face.headEulerAngleZ
+
+        targetNeckRot  = motorFromAngle(yaw   * tuning.neckRotSign)
+        targetNeckElev = motorFromAngle(pitch * tuning.neckElevSign)
+        targetNeckTilt = motorFromAngle(roll  * tuning.neckTiltSign)
+
+        val gaze = result.gaze
+        val avgPupil = pupilAverage(gaze)
+        if (tuning.useEyeGaze && avgPupil != null) {
+            targetX = (0.5f + avgPupil.x * tuning.eyeGazeGain).coerceIn(0f, 1f)
+            targetY = (0.5f + avgPupil.y * tuning.eyeGazeGain).coerceIn(0f, 1f)
+        } else {
+            targetX = (0.5f + (yaw   * tuning.neckRotSign  / tuning.neckAngleRange) * 0.5f).coerceIn(0f, 1f)
+            targetY = (0.5f + (pitch * tuning.neckElevSign / tuning.neckAngleRange) * 0.5f).coerceIn(0f, 1f)
+        }
+    }
+
+    /**
+     * Eyelid mirroring (blinkMethod = "mirror" or "both"). Runs regardless
+     * of mode so you can mix it with FOLLOW or any other preset. Mapping
+     * is viewer-relative because that's what ML Kit returns on this build.
+     */
+    private fun maybeMirrorEyelids(result: FaceResult) {
+        val face = result.faces.firstOrNull() ?: return
+        val lp = face.leftEyeOpenProbability  ?: 1f
+        val rp = face.rightEyeOpenProbability ?: 1f
+        // Cross-eye coupling: at c=0 each eyelid follows its own raw prob
+        // (false single-eye blinks slip through). At c=1 both follow the
+        // brighter prob (fully linked). Intermediate values let the clearer
+        // eye drag the noisier one up while still permitting deliberate
+        // winks (where BOTH probs change).
+        val c = tuning.eyelidCoupling
+        val brighter = maxOf(lp, rp)
+        val coupledL = lp * (1f - c) + brighter * c
+        val coupledR = rp * (1f - c) + brighter * c
+        val targetLdl = eyelidFromProb(coupledL)
+        val targetLdr = eyelidFromProb(coupledR)
+        val smoothedLdl = lastLdlValue + (targetLdl - lastLdlValue) * EYELID_ALPHA
+        val smoothedLdr = lastLdrValue + (targetLdr - lastLdrValue) * EYELID_ALPHA
+        if (kotlin.math.abs(smoothedLdl - lastLdlValue) > 1.5f ||
+            kotlin.math.abs(smoothedLdr - lastLdrValue) > 1.5f) {
+            motors.move(eyelidLeft = smoothedLdl, eyelidRight = smoothedLdr)
+            lastLdlValue = smoothedLdl
+            lastLdrValue = smoothedLdr
+        }
+    }
+
+    private fun motorFromAngle(angleDeg: Float): Float =
+        (50f + (angleDeg / tuning.neckAngleRange) * 50f).coerceIn(0f, 100f)
+
+    private fun pupilAverage(gaze: GazeData?): android.graphics.PointF? {
+        gaze ?: return null
+        val l = gaze.leftEyeOffset
+        val r = gaze.rightEyeOffset
+        return when {
+            l != null && r != null -> android.graphics.PointF((l.x + r.x) * 0.5f, (l.y + r.y) * 0.5f)
+            l != null -> l
+            r != null -> r
+            else -> null
+        }
+    }
+
+    private fun eyelidFromProb(p: Float): Float {
+        val clamped = p.coerceIn(0f, 1f)
+        return MabuMotors.EYELID_CLOSED +
+            (MabuMotors.EYELID_OPEN - MabuMotors.EYELID_CLOSED) * clamped
+    }
+
+    // ---------- Motor tween ----------------------------------------------------
+
+    private val gazeTickRunnable = object : Runnable {
+        override fun run() {
+            if (motors.isOpen() && mode != Mode.SLEEP) {
+                // FOLLOW + IDLE both compose face/center baseline with the
+                // animation offsets. PUPPET sets targetX/Y directly in
+                // updatePuppetFrom and bypasses this composition.
+                if (mode == Mode.FOLLOW || mode == Mode.IDLE) {
+                    targetX = (followX + saccadeOffsetX + glanceOffsetX).coerceIn(0f, 1f)
+                    targetY = (followY + saccadeOffsetY + glanceOffsetY).coerceIn(0f, 1f)
+                }
+                // Hardware mount calibration: the camera sits slightly off
+                // from the robot's eye axis, so we bias every eye target
+                // upward by gazeYOffset. Applies to ALL modes (FOLLOW eye
+                // tracking, PUPPET head-pose-driven eyes, PUPPET pupil
+                // gaze) because the offset is about where the robot is
+                // physically pointed, not what it's tracking.
+                val effectiveTargetY = (targetY - tuning.gazeYOffset).coerceIn(0f, 1f)
+                val eyesA = tuning.smoothAlphaEyes
+                val neckA = tuning.smoothAlphaNeck
+                currentX += (targetX - currentX) * eyesA
+                currentY += (effectiveTargetY - currentY) * eyesA
+                currentNeckRot  += (targetNeckRot  - currentNeckRot ) * neckA
+                currentNeckElev += (targetNeckElev - currentNeckElev) * neckA
+                currentNeckTilt += (targetNeckTilt - currentNeckTilt) * neckA
+
+                val eyesChanged =
+                    kotlin.math.abs(currentX - lastSentX) > GAZE_EPSILON ||
+                    kotlin.math.abs(currentY - lastSentY) > GAZE_EPSILON
+                val neckChanged =
+                    kotlin.math.abs(currentNeckRot  - lastSentNeckRot ) > NECK_EPSILON ||
+                    kotlin.math.abs(currentNeckElev - lastSentNeckElev) > NECK_EPSILON ||
+                    kotlin.math.abs(currentNeckTilt - lastSentNeckTilt) > NECK_EPSILON
+
+                if (eyesChanged || neckChanged) {
+                    motors.move(
+                        eyesLR    = currentX * 100f,
+                        eyesUD    = currentY * 100f,
+                        neckRot   = currentNeckRot,
+                        neckElev  = currentNeckElev,
+                        neckTilt  = currentNeckTilt
+                    )
+                    lastSentX = currentX; lastSentY = currentY
+                    lastSentNeckRot  = currentNeckRot
+                    lastSentNeckElev = currentNeckElev
+                    lastSentNeckTilt = currentNeckTilt
+                    if (++gazeLogCounter % 50 == 0) {
+                        Log.i(TAG, "${mode.name} gaze=(${"%.2f".format(currentX)}," +
+                            "${"%.2f".format(currentY)}) neck=(R${"%.0f".format(currentNeckRot)}," +
+                            "E${"%.0f".format(currentNeckElev)},T${"%.0f".format(currentNeckTilt)})")
+                    }
+                }
+            }
+            handler.postDelayed(this, GAZE_TICK_MS)
+        }
+    }
+
+    // ---------- Blink + saccades + glances ------------------------------------
+
+    private val blinkRunnable = object : Runnable {
+        override fun run() {
+            val method = tuning.blinkMethod
+            // Spontaneous timer-driven blink fires for "spontaneous" and
+            // "both"; "mirror" relies on the user's blinks instead; "none"
+            // skips automatic blinking entirely. SLEEP holds eyes closed.
+            if (mode != Mode.SLEEP && (method == "spontaneous" || method == "both")) {
+                doBlink()
+            }
+            val mean = tuning.blinkIntervalSec * 1000f
+            val nextDelay = (mean * 0.7f + (Math.random() * mean * 0.6f)).toLong()
+            handler.postDelayed(this, nextDelay)
+        }
+    }
+
+    private fun doBlink() {
+        if (!motors.isOpen()) return
+        motors.move(
+            eyelidLeft = MabuMotors.EYELID_CLOSED,
+            eyelidRight = MabuMotors.EYELID_CLOSED
+        )
+        handler.postDelayed({
+            motors.move(
+                eyelidLeft = MabuMotors.EYELID_NEUTRAL,
+                eyelidRight = MabuMotors.EYELID_NEUTRAL
+            )
+            if (Math.random() < tuning.doubleBlinkChance) {
+                handler.postDelayed({
+                    motors.move(
+                        eyelidLeft = MabuMotors.EYELID_CLOSED,
+                        eyelidRight = MabuMotors.EYELID_CLOSED
+                    )
+                    handler.postDelayed({
+                        motors.move(
+                            eyelidLeft = MabuMotors.EYELID_NEUTRAL,
+                            eyelidRight = MabuMotors.EYELID_NEUTRAL
+                        )
+                    }, BLINK_HOLD_MS - 20)
+                }, 120L)
+            }
+        }, BLINK_HOLD_MS)
+    }
+
+    private val saccadeRunnable = object : Runnable {
+        override fun run() {
+            if (mode != Mode.SLEEP && tuning.enableSaccades) {
+                val amp = tuning.saccadeAmplitude
+                val dx = ((Math.random() - 0.5) * 2.0 * amp).toFloat()
+                val dy = ((Math.random() - 0.5) * 2.0 * amp).toFloat()
+                saccadeOffsetX = dx; saccadeOffsetY = dy
+                handler.postDelayed({
+                    saccadeOffsetX = 0f; saccadeOffsetY = 0f
+                }, SACCADE_DURATION_MS)
+            }
+            val mean = tuning.saccadeIntervalSec * 1000f
+            val next = (mean * 0.7f + (Math.random() * mean * 0.6f)).toLong()
+            handler.postDelayed(this, next)
+        }
+    }
+
+    private val glanceRunnable = object : Runnable {
+        override fun run() {
+            if (mode != Mode.SLEEP && tuning.enableGlances) {
+                val (gx, gy) = GLANCE_DIRECTIONS.random()
+                glanceOffsetX = gx; glanceOffsetY = gy
+                val dur = GLANCE_DURATION_MIN_MS +
+                    (Math.random() * (GLANCE_DURATION_MAX_MS - GLANCE_DURATION_MIN_MS)).toLong()
+                handler.postDelayed({
+                    glanceOffsetX = 0f; glanceOffsetY = 0f
+                }, dur)
+            }
+            val mean = tuning.glanceIntervalSec * 1000f
+            val next = (mean * 0.7f + (Math.random() * mean * 0.6f)).toLong()
+            handler.postDelayed(this, next)
+        }
+    }
+
+    // ---------- Lifecycle -----------------------------------------------------
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_CAMERA) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                startCamera()
+            } else {
+                Toast.makeText(this, R.string.permission_denied, Toast.LENGTH_LONG).show()
+                finish()
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        handler.removeCallbacksAndMessages(null)
+        cameraSource?.release()
+        try { motors.restingPose() } catch (_: Throwable) {}
+        motors.close()
+        Log.i(TAG, "Released camera + motors")
+    }
+
+    companion object {
+        private const val TAG = "MabuFaceOverlay"
+        private const val REQ_CAMERA = 10
+
+        private const val HOLD_LAST_GAZE_MS = 1000L
+        private const val HOLD_OVERLAY_MS = 500L
+
+        private const val GAZE_TICK_MS = 40L
+        private const val GAZE_EPSILON = 0.003f
+        private const val NECK_EPSILON = 0.5f
+        private const val EYELID_ALPHA = 0.35f
+
+        private const val BLINK_HOLD_MS = 100L
+        private const val SACCADE_DURATION_MS = 150L
+        private const val GLANCE_DURATION_MIN_MS = 600L
+        private const val GLANCE_DURATION_MAX_MS = 1400L
+
+        private val GLANCE_DIRECTIONS = listOf(
+            Pair(-0.30f, -0.10f), Pair( 0.30f, -0.10f),
+            Pair(-0.30f,  0.15f), Pair( 0.30f,  0.15f),
+            Pair(-0.40f,  0f   ), Pair( 0.40f,  0f   ),
+            Pair( 0f   , -0.25f), Pair( 0f   ,  0.20f)
+        )
+    }
+}
