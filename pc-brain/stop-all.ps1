@@ -8,7 +8,7 @@ Get-CimInstance Win32_Process -Filter "name='python.exe'" | ForEach-Object {
     $cl = $_.CommandLine
     if ($cl -and ($pyScripts | Where-Object { $cl -like "*$_*" })) {
         Write-Host "stopping python: $($_.ProcessId)"
-        try { Stop-Process -Id $_.ProcessId -Force } catch {}
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
     }
 }
 

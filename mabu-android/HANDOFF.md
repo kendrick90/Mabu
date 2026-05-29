@@ -3,6 +3,54 @@
 Read this before the rest of the README. It captures the working state, the
 architecture, and what's next. The app is **Anima** (`com.mabu.anima`).
 
+## ⭐ Latest state (end of 2026-05-29 session) — read first
+
+The stack moved fully onto **Pipecat** (one WebRTC session device⇄PC) and a lot
+landed. Validated on unit 4. All brain code is in `pc-brain/`.
+
+**Working end-to-end (voice):** WhisperLive streaming STT → Silero VAD + SmartTurn
+→ **Rocinante 12B** (decensored RP LLM) → Chatterbox TTS, over WebRTC. Plus:
+- **Swappable LLMs** — `run-llm.ps1 <name>` (registry: `rocinante`, `qwen`).
+  Models now live in `pc-brain/models/` (gitignored). Rocinante needs forced
+  `--chat-template chatml` + `stop=["<|im_end|>"]` (see run-llm.ps1 / pipecat_bot).
+- **Personas** — voice commands ("become X", "new persona" → guided design
+  workshop, "save it as X"); each persona has its own prompt + memory.
+  `pc-brain/personas/*.json` (gitignored).
+- **Per-persona voices + cloning** — "clone my voice (as X)" captures ~8s and
+  clones via Chatterbox; "use the X voice". `pc-brain/voices/*.wav` (gitignored).
+- **RP narration stripped from speech** (`clean_for_speech`): `*actions*` and
+  `Name:` prefixes aren't spoken (long replies kept). FUTURE hook: route
+  `*laughs*`→Chatterbox expression, `*nods*`→MabuMotors.
+- **Control API** (`control_server.py`, port 7861): `GET /status`,
+  `POST /switch|/voice|/create`. `curl localhost:7861/status` to see state.
+
+**Launch:** `pc-brain/run-all.ps1` (dependency-ordered, health-gated, skips
+already-running). `stop-all.ps1` tears down. Then connect the device (it's in
+`cognitionMode=pipecat`). Firewall: 7860 open; add 7861 if you want the control
+API off-box.
+
+**⚠ KNOWN ISSUES / next session (priority order):**
+1. **VRAM ceiling → latency blowups.** Rocinante 12B + WhisperLive + Chatterbox
+   all on the 4090 sits at ~23.4/24 GB. Any extra alloc (cloned-voice synth, KV
+   growth) OOMs → CPU fallback → huge latency. **FIX: free headroom** — the
+   **M6000 (GPU 1) is idle (12 GB)**; move WhisperLive and/or Chatterbox to it
+   (drop their `CUDA_VISIBLE_DEVICES=0` → `1`), or run a smaller LLM. Do this
+   before long sessions. Always `stop-all.ps1` between runs to clear VRAM.
+2. **Tablet (RK3288) choking → WebRTC media stalls.** Logs show repeated
+   `read_audio_frame Timeout … clearing track`. Camera + ML Kit + motors +
+   opus/AEC starve the audio threads → speech dropouts both directions.
+   FIX direction: throttle/pause camera + ML Kit face detection in pipecat mode.
+3. **Reconnect can wedge the pipeline** (`StartFrame not received yet` flood) —
+   a dropped/re-offered WebRTC session leaves a broken pipeline; needs a clean
+   bot restart. Want graceful reconnect handling.
+4. After any structural/`__init__` change to a pipeline processor, **smoke-test**
+   (`python -c "import …"` + instantiate) — a dropped attr crashed PersonaControl
+   on every frame this session (no STT/bubbles) and a startup log looked "clean".
+
+**Pinned commits this session** (all local, unpushed): Pipecat client/wrapper,
+streaming WhisperLive STT, Rocinante + swappable LLMs, personas, voices+cloning,
+control API, launcher. Run `git log --oneline` for the list.
+
 ## What works right now (full hands-free conversation)
 
 A complete streaming loop runs end-to-end, all cognition on the PC brain:
