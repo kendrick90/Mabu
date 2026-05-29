@@ -16,6 +16,7 @@ browser test UI + the WebRTC offer endpoint that the Pipecat Android SDK
 (SmallWebRTC transport) also connects to.
 """
 import os
+import re
 
 import aiohttp
 from loguru import logger
@@ -60,6 +61,26 @@ MABU_PERSONA = (
 )
 
 
+_ACTION_RE = re.compile(r"\*[^*]*\*")            # *stage directions*
+_NAME_RE = re.compile(r"^\s*[A-Za-z][\w '\-]{0,24}:\s*")  # leading "Mabu:" / "Pirate Pete:"
+
+
+def clean_for_speech(text: str) -> str:
+    """Strip RP narration so Mabu speaks only dialogue (long replies are fine --
+    we just don't read descriptions aloud). Roleplay models like Rocinante emit
+    'Mabu: *chuckles* Sure!' and bare '*winks*'; without this the device says
+    'Mabu colon' and reads stage directions aloud.
+
+    FUTURE: the '*...*' actions stripped here are exactly the emotes we'd want to
+    route elsewhere -- '*laughs*' -> a Chatterbox laugh / higher exaggeration,
+    '*nods*'/'*tilts head*' -> MabuMotors over the device data channel. Capture
+    them here when we build that; for now they're just dropped from speech."""
+    t = _ACTION_RE.sub("", text)
+    t = _NAME_RE.sub("", t)
+    t = t.replace("*", " ")
+    return re.sub(r"\s+", " ", t).strip()
+
+
 class ChatterboxTTSService(TTSService):
     """Custom Pipecat TTS service that streams PCM from our Chatterbox server."""
 
@@ -74,6 +95,9 @@ class ChatterboxTTSService(TTSService):
         return True
 
     async def run_tts(self, text: str, context_id: str = ""):
+        text = clean_for_speech(text)
+        if not text:
+            return  # nothing speakable (e.g. the chunk was just "*winks*")
         voice = getattr(self._voice_state, "name", None) if self._voice_state else None
         logger.debug(f"[chatterbox] synth (voice={voice}): {text!r}")
         await self.start_ttfb_metrics()
