@@ -70,8 +70,13 @@ dependencies {
     implementation("com.alphacephei:vosk-android:0.3.47@aar")
     implementation("net.java.dev.jna:jna:5.13.0@aar")
 
-    // HTTP + SSE + WebSocket client for the "streaming consciousness"
-    // path -- llama-server SSE for LLM, whisper.cpp / piper for ASR / TTS.
+    // HTTP + SSE + WebSocket client for the legacy streaming path
+    // (RemoteAsr/RemoteTts/StreamingLlama -- kept as local fallback while we
+    // migrate to Pipecat).
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
+
+    // Pipecat Android client + SmallWebRTC transport (Phase 2). Pulls the core
+    // ai.pipecat:client transitively and bundles WebRTC native libs. minSdk 24.
+    implementation("ai.pipecat:small-webrtc-transport:1.1.0")
 }
