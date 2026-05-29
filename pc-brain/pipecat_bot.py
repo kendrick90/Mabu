@@ -35,13 +35,17 @@ from pipecat.runner.run import main
 from pipecat.runner.utils import create_transport
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.tts_service import TTSService
-from pipecat.services.whisper.stt import WhisperSTTService
 from pipecat.transports.base_transport import TransportParams
+
+from whisperlive_stt import WhisperLiveSTTService
 
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://localhost:8080/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5-7b-instruct")
 CHATTERBOX_URL = os.environ.get("CHATTERBOX_URL", "http://localhost:8123")
 TTS_SAMPLE_RATE = int(os.environ.get("TTS_SAMPLE_RATE", "24000"))
+# Streaming STT backend (Option 1): the existing WhisperLive WS server. Loopback
+# on the PC, so no firewall rule needed. Start it with run-whisperlive.ps1.
+WHISPERLIVE_URL = os.environ.get("WHISPERLIVE_URL", "ws://localhost:9090")
 
 MABU_PERSONA = (
     "You are Mabu, a small yellow social robot watching the user from a tabletop. "
@@ -88,12 +92,26 @@ class ChatterboxTTSService(TTSService):
 
 
 async def run_pipeline(transport):
-    stt = WhisperSTTService(model="large-v3-turbo", device="cuda", compute_type="float16")
+    # Streaming STT via WhisperLive (partials + finals), replacing the segmented
+    # in-process WhisperSTTService. Pipecat VAD/SmartTurn still own turn-taking.
+    stt = WhisperLiveSTTService(url=WHISPERLIVE_URL, model="large-v3-turbo", language="en")
     llm = OpenAILLMService(base_url=LLAMA_URL, api_key="local", model=LLM_MODEL)
     tts = ChatterboxTTSService(base_url=CHATTERBOX_URL, sample_rate=TTS_SAMPLE_RATE)
 
+    # In Pipecat 1.x, VAD / user-turn detection lives on the USER AGGREGATOR, not
+    # the transport. Without vad_analyzer here, no VADController is created, so
+    # UserStartedSpeaking never fires and voice never reaches STT (text/SAY still
+    # works because it bypasses VAD). This is THE fix for "speech not transcribing".
+    # Default VAD params (confidence 0.7 / min_volume 0.6) -- these reject the
+    # near-silence that made Whisper hallucinate "Thank you". The user aggregator
+    # owns VAD/turn detection in Pipecat 1.x, so this is the analyzer that counts.
+    vad = SileroVADAnalyzer()
+
     context = LLMContext([{"role": "system", "content": MABU_PERSONA}])
-    aggregators = LLMContextAggregatorPair(context)
+    aggregators = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(vad_analyzer=vad),
+    )
 
     pipeline = Pipeline([
         transport.input(),

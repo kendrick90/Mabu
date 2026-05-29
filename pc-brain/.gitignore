@@ -6,3 +6,4 @@ whisperlive/
 bubble_*.png
 chatterbox/
 pipecat/
+*.log.err
