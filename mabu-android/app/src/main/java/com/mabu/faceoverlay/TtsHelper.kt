@@ -43,13 +43,46 @@ class TtsHelper(context: Context) {
         Log.i(TAG, "applyVolume $volume -> stream level $level/$max")
     }
 
-    fun speak(text: String, volume: Float = -1f) {
+    fun speak(text: String, volume: Float = -1f, queueAdd: Boolean = false) {
         if (!ready) {
             Log.w(TAG, "TTS not ready, dropping: $text")
             return
         }
+        val clean = sanitize(text)
+        if (clean.isBlank()) {
+            Log.w(TAG, "sanitized text empty, dropping")
+            return
+        }
         if (volume >= 0f) applyVolume(volume)
-        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "mabu-utterance")
+        val queueMode = if (queueAdd) TextToSpeech.QUEUE_ADD else TextToSpeech.QUEUE_FLUSH
+        // Utterance IDs need to be unique when queueing -- otherwise Pico
+        // can drop subsequent fragments thinking they're duplicates.
+        val utterId = "mabu-${System.nanoTime()}"
+        tts.speak(clean, queueMode, null, utterId)
+    }
+
+    /**
+     * Strip anything Pico's UTF-8 string handling chokes on. Pico is from
+     * 2009 and has known SIGSEGVs in picobase_get_next_utf8char on emoji,
+     * smart quotes, em/en dashes, non-breaking spaces, and very long
+     * inputs. The LLM output is the main offender. Replace common
+     * substitutes with ASCII, then drop anything outside printable ASCII.
+     */
+    private fun sanitize(text: String): String {
+        val replaced = text
+            .replace('‘', '\'').replace('’', '\'') // smart single quotes
+            .replace('“', '"').replace('”', '"')   // smart double quotes
+            .replace('–', '-').replace('—', '-')   // en / em dash
+            .replace('…', '.')                          // horizontal ellipsis
+            .replace(' ', ' ')                          // nbsp
+            .replace("\r\n", " ").replace('\n', ' ').replace('\t', ' ')
+        // Keep only printable ASCII (0x20..0x7E). Drops emoji, control
+        // chars, anything else exotic.
+        val cleaned = buildString(replaced.length) {
+            for (c in replaced) if (c.code in 0x20..0x7E) append(c)
+        }
+        // Pico has internal buffer limits; long inputs can trip them.
+        return cleaned.take(800).trim()
     }
 
     fun stop() {

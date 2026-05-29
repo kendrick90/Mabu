@@ -7,7 +7,11 @@
 
 [CmdletBinding()]
 param(
-    [string] $Ref = ""
+    # Pinned to the commit just before f08f20a0e ("ggml-cpu: fuse RMS_NORM
+    # + MUL on CPU backend"), which assertion-aborts on armv7 inference
+    # with `scale > 0.0f` failed. Once upstream fixes the fusion for armv7
+    # we can move the pin forward or drop it.
+    [string] $Ref = "07eaf919e"
 )
 
 $ErrorActionPreference = 'Stop'

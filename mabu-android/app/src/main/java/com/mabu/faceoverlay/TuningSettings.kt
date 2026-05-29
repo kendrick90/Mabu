@@ -64,6 +64,10 @@ class TuningSettings {
      *  the tablet also adjust STREAM_MUSIC live between slider moves. */
     var ttsVolume = 0.22f
 
+    /** "local" = LlamaInference on-device; "streaming" = llama-server on LAN. */
+    var cognitionMode = "streaming"
+    var llmServerUrl  = "http://10.0.0.49:8080"
+
     fun load(prefs: SharedPreferences) {
         gazeGain           = prefs.getFloat("gazeGain",           gazeGain)
         gazeYOffset        = prefs.getFloat("gazeYOffset",        gazeYOffset)
@@ -87,6 +91,8 @@ class TuningSettings {
         eyelidCoupling     = prefs.getFloat("eyelidCoupling",     eyelidCoupling)
         ttsVolume          = prefs.getFloat("ttsVolume",          ttsVolume)
         neckFollowGain     = prefs.getFloat("neckFollowGain",     neckFollowGain)
+        cognitionMode      = prefs.getString("cognitionMode",     cognitionMode) ?: cognitionMode
+        llmServerUrl       = prefs.getString("llmServerUrl",      llmServerUrl)  ?: llmServerUrl
     }
 
     fun save(prefs: SharedPreferences) {
@@ -113,6 +119,8 @@ class TuningSettings {
             putFloat("eyelidCoupling",     eyelidCoupling)
             putFloat("ttsVolume",          ttsVolume)
             putFloat("neckFollowGain",     neckFollowGain)
+            putString("cognitionMode",     cognitionMode)
+            putString("llmServerUrl",      llmServerUrl)
             apply()
         }
     }
@@ -142,6 +150,8 @@ class TuningSettings {
         eyelidCoupling     = 0.5f
         ttsVolume          = 0.22f
         neckFollowGain     = 0.4f
+        cognitionMode      = "streaming"
+        llmServerUrl       = "http://10.0.0.49:8080"
     }
 
     /** Nuclear reset: blow away calibration too. Use only when re-installing. */

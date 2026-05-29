@@ -69,4 +69,9 @@ dependencies {
     // language model from disk (see /sdcard/vosk-model-en/ on the device).
     implementation("com.alphacephei:vosk-android:0.3.47@aar")
     implementation("net.java.dev.jna:jna:5.13.0@aar")
+
+    // HTTP + SSE + WebSocket client for the "streaming consciousness"
+    // path -- llama-server SSE for LLM, whisper.cpp / piper for ASR / TTS.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
 }

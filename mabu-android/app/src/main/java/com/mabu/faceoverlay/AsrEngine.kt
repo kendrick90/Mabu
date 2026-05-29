@@ -69,7 +69,11 @@ class AsrEngine(
         try {
             speechService?.stop()
         } catch (_: Throwable) {}
-        try { recognizer?.reset() } catch (_: Throwable) {}
+        // Don't call recognizer.reset() here -- on this device it races
+        // with a still-in-flight audio callback and crashes Vosk's worker
+        // thread with a corrupted-size SIGSEGV in memcpy. SpeechService.stop()
+        // tears down its own threads; the recognizer's state will be
+        // overwritten by the next startListening() session anyway.
         isListening = false
         Log.i(TAG, "stopped")
     }

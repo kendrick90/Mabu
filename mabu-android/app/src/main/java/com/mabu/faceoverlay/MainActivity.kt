@@ -33,6 +33,7 @@ class MainActivity : AppCompatActivity() {
     private val tts by lazy { TtsHelper(this) }
     private var asr: AsrEngine? = null
     private lateinit var micButton: TextView
+    private var streamingLlm: StreamingLlama? = null
 
     private val tuning = TuningSettings()
 
@@ -198,14 +199,24 @@ class MainActivity : AppCompatActivity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
         }
 
-        // Initialise Vosk off the main thread (model load takes ~1s).
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(
                 this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_RECORD_AUDIO
             )
         }
+        // Load LLM FIRST, then Vosk. The Qwen GGUF needs ~470 MB of
+        // contiguous virtual address space and we're on 32-bit ARM, so it
+        // can't be allocated after Vosk + ML Kit + camera have fragmented
+        // our VA layout. Pre-loading at startup gets it the first dibs.
         Thread {
+            handler.post { micButton.text = "🎤 loading LLM…" }
+            val llmOk = LlamaInference.load(
+                "/data/local/tmp/mabu.gguf", ctxSize = 1024, threads = 4
+            )
+            Log.i(TAG, "LLM preload: ${if (llmOk) "ok" else "FAILED"}")
+
+            handler.post { micButton.text = "🎤 loading ASR…" }
             asr = AsrEngine(
                 modelPath = ASR_MODEL_PATH,
                 onFinal = { transcript -> handler.post { onTranscript(transcript) } },
@@ -214,7 +225,13 @@ class MainActivity : AppCompatActivity() {
                 }
             )
             handler.post {
-                micButton.text = if (asr?.isReady == true) "🎤 hold to talk" else "🎤 (no model)"
+                micButton.text = if (asr?.isReady == true && llmOk) {
+                    "🎤 hold to talk"
+                } else if (asr?.isReady == true) {
+                    "🎤 (no LLM)"
+                } else {
+                    "🎤 (no ASR)"
+                }
             }
         }.start()
     }
@@ -242,14 +259,43 @@ class MainActivity : AppCompatActivity() {
     private fun onTranscript(text: String) {
         Log.i(TAG, "user: $text")
         micButton.text = "🎤 hold to talk"
-        // Run the LLM off-thread, then speak the result.
-        Thread {
-            if (!LlamaInference.isLoaded) {
-                if (!LlamaInference.load("/data/local/tmp/mabu.gguf", ctxSize = 1024, threads = 4)) {
-                    Log.e(TAG, "LLM model load failed")
-                    return@Thread
+        when (tuning.cognitionMode) {
+            "streaming" -> respondStreaming(text)
+            else -> respondLocal(text)
+        }
+    }
+
+    private fun respondStreaming(text: String) {
+        val llm = streamingLlm ?: StreamingLlama(
+            baseUrl = tuning.llmServerUrl,
+            systemPrompt = MABU_PERSONA
+        ).also { streamingLlm = it }
+
+        val t0 = System.currentTimeMillis()
+        llm.chat(text, object : StreamingLlama.Listener {
+            override fun onSentence(sentence: String, isFirst: Boolean) {
+                val dt = System.currentTimeMillis() - t0
+                Log.i(TAG, "mabu sentence (+${dt}ms, first=$isFirst): $sentence")
+                handler.post { tts.speak(sentence, queueAdd = !isFirst) }
+            }
+            override fun onDone(fullText: String) {
+                Log.i(TAG, "mabu done in ${System.currentTimeMillis() - t0}ms")
+            }
+            override fun onError(e: Throwable) {
+                Log.e(TAG, "stream error, falling back to local", e)
+                handler.post {
+                    tts.speak("Sorry, I lost connection to my brain.")
                 }
             }
+        })
+    }
+
+    private fun respondLocal(text: String) {
+        if (!LlamaInference.isLoaded) {
+            Log.e(TAG, "LLM not loaded; skipping reply")
+            return
+        }
+        Thread {
             val prompt =
                 "<|im_start|>system\n${MABU_PERSONA}<|im_end|>\n" +
                 "<|im_start|>user\n$text<|im_end|>\n" +
@@ -257,7 +303,7 @@ class MainActivity : AppCompatActivity() {
             val t = System.currentTimeMillis()
             val reply = LlamaInference.generate(prompt, maxTokens = 80).trim()
             val dt = System.currentTimeMillis() - t
-            Log.i(TAG, "mabu (${dt}ms): $reply")
+            Log.i(TAG, "mabu local (${dt}ms): $reply")
             if (reply.isNotBlank()) handler.post { tts.speak(reply) }
         }.start()
     }
