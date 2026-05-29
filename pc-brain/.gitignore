@@ -13,3 +13,7 @@ models/
 
 # Persona definitions + per-persona conversation memory (runtime state).
 personas/
+
+# Cloned/reference voice clips for Chatterbox (runtime).
+voices/
+voice.wav

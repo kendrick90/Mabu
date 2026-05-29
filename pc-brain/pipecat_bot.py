@@ -39,7 +39,7 @@ from pipecat.transports.base_transport import TransportParams
 
 from whisperlive_stt import WhisperLiveSTTService
 from persona_manager import PersonaManager
-from persona_control import PersonaControl
+from persona_control import PersonaControl, VoiceState
 
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://localhost:8080/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5-7b-instruct")
@@ -63,21 +63,25 @@ MABU_PERSONA = (
 class ChatterboxTTSService(TTSService):
     """Custom Pipecat TTS service that streams PCM from our Chatterbox server."""
 
-    def __init__(self, base_url: str, sample_rate: int = 24000, **kwargs):
+    def __init__(self, base_url: str, sample_rate: int = 24000, voice_state=None, **kwargs):
         super().__init__(sample_rate=sample_rate, **kwargs)
         self._base_url = base_url.rstrip("/")
+        # Shared holder for the active persona's voice; PersonaControl updates it
+        # on switch, we read it per request so each persona can sound different.
+        self._voice_state = voice_state
 
     def can_generate_metrics(self) -> bool:
         return True
 
     async def run_tts(self, text: str, context_id: str = ""):
-        logger.debug(f"[chatterbox] synth: {text!r}")
+        voice = getattr(self._voice_state, "name", None) if self._voice_state else None
+        logger.debug(f"[chatterbox] synth (voice={voice}): {text!r}")
         await self.start_ttfb_metrics()
         yield TTSStartedFrame()
         try:
             timeout = aiohttp.ClientTimeout(total=60)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(f"{self._base_url}/tts", json={"text": text}) as resp:
+                async with session.post(f"{self._base_url}/tts", json={"text": text, "voice": voice}) as resp:
                     if resp.status != 200:
                         logger.error(f"[chatterbox] HTTP {resp.status}")
                         return
@@ -115,8 +119,6 @@ async def run_pipeline(transport):
             extra={"stop": ["<|im_end|>"]},
         ),
     )
-    tts = ChatterboxTTSService(base_url=CHATTERBOX_URL, sample_rate=TTS_SAMPLE_RATE)
-
     # In Pipecat 1.x, VAD / user-turn detection lives on the USER AGGREGATOR, not
     # the transport. Without vad_analyzer here, no VADController is created, so
     # UserStartedSpeaking never fires and voice never reaches STT (text/SAY still
@@ -133,14 +135,24 @@ async def run_pipeline(transport):
     personas = PersonaManager(PERSONAS_DIR, MABU_PERSONA)
     active = personas.active()
     seed = [{"role": "system", "content": active["prompt"]}] + (active.get("memory") or [])
-    logger.info(f"[persona] active = {active.get('name')} (of {personas.display_names()})")
+    logger.info(f"[persona] active = {active.get('name')} voice={active.get('voice')} "
+                f"(of {personas.display_names()})")
+
+    # Shared voice handle: the TTS service reads it per request; PersonaControl
+    # updates it on every persona change so switching persona switches voice.
+    voice_state = VoiceState(active.get("voice"))
+    tts = ChatterboxTTSService(
+        base_url=CHATTERBOX_URL, sample_rate=TTS_SAMPLE_RATE, voice_state=voice_state
+    )
 
     context = LLMContext(seed)
     aggregators = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=vad),
     )
-    persona_ctl = PersonaControl(personas, LLAMA_URL, stop_tokens=["<|im_end|>"])
+    persona_ctl = PersonaControl(
+        personas, LLAMA_URL, stop_tokens=["<|im_end|>"], voice_state=voice_state
+    )
 
     pipeline = Pipeline([
         transport.input(),

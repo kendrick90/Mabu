@@ -125,7 +125,10 @@ class WhisperLiveSTTService(STTService):
             self._receive_task = None
         if self._ws:
             try:
-                await self._ws.send("END_OF_AUDIO")
+                # MUST be bytes: the server checks `frame_data == b"END_OF_AUDIO"`
+                # and otherwise np.frombuffer()s it -- a text frame (str) crashes
+                # its STT thread ("a bytes-like object is required, not 'str'").
+                await self._ws.send(b"END_OF_AUDIO")
             except Exception:
                 pass
             try:

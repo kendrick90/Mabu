@@ -36,14 +36,28 @@ DESIGNER_PROMPT = (
 )
 
 
+class VoiceState:
+    """Shared holder for the active persona's Chatterbox voice name. The TTS
+    service reads it per request; PersonaControl sets it on every persona change
+    so switching persona also switches voice."""
+
+    def __init__(self, name=None):
+        self.name = name
+
+
 class PersonaControl(FrameProcessor):
-    def __init__(self, manager, llama_url: str, stop_tokens=None, **kwargs):
+    def __init__(self, manager, llama_url: str, stop_tokens=None, voice_state=None, **kwargs):
         super().__init__(**kwargs)
         self._mgr = manager
         self._llama_url = llama_url.rstrip("/")
         self._stop = stop_tokens or ["<|im_end|>"]
+        self._voice = voice_state  # VoiceState, shared with the TTS service
         self._mode = "normal"  # "normal" | "workshop"
         self._prev_persona = None  # to restore on workshop cancel
+
+    def _apply_voice(self, persona):
+        if self._voice is not None:
+            self._voice.name = (persona or {}).get("voice")
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -134,6 +148,7 @@ class PersonaControl(FrameProcessor):
         persona = self._mgr.get(target_slug)
         self._mgr.set_active(target_slug)
         self._seed_context(ctx, persona)
+        self._apply_voice(persona)
         self._mode = "normal"
         name = persona.get("name", target_slug)
         logger.info(f"[persona] switched to {name}")
@@ -145,6 +160,7 @@ class PersonaControl(FrameProcessor):
         self._prev_persona = self._mgr.active_name()
         self._mode = "workshop"
         ctx.set_messages([{"role": "system", "content": DESIGNER_PROMPT}])
+        self._apply_voice(None)  # design in the default voice
         logger.info("[persona] entered design workshop")
         await self._speak("Ooh, a new character! Tell me their name and what they're like.")
 
@@ -153,6 +169,7 @@ class PersonaControl(FrameProcessor):
         persona = self._mgr.get(self._prev_persona) if self._prev_persona else self._mgr.active()
         if persona:
             self._seed_context(ctx, persona)
+            self._apply_voice(persona)
         await self._speak(message)
 
     async def _save_workshop(self, ctx, name):
@@ -161,7 +178,9 @@ class PersonaControl(FrameProcessor):
         prompt = await self._distill(convo, name)
         self._mgr.create(name, prompt)
         self._mgr.set_active(name)
-        self._seed_context(ctx, self._mgr.get(name))
+        new_persona = self._mgr.get(name)
+        self._seed_context(ctx, new_persona)
+        self._apply_voice(new_persona)
         self._mode = "normal"
         logger.info(f"[persona] saved + switched to new persona '{name}'")
         await self._speak(f"Done! I'm {name} now. Hello!")
