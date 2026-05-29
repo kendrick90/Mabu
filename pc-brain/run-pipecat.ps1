@@ -8,10 +8,19 @@ $ErrorActionPreference = "Continue"
 $root = $PSScriptRoot
 $py   = Join-Path $root "pipecat\.venv\Scripts\python.exe"
 
-# Force Python UTF-8 mode: the runner prints emoji ("Bot ready!") and the
-# Windows cp1252 console codec crashes on it otherwise (UnicodeEncodeError).
+# Force Python UTF-8 mode: the pipecat runner library prints emoji we don't
+# control ("Bot ready!", arrows). PYTHONUTF8 stops Python from crashing on the
+# write; the console-encoding lines below make those UTF-8 bytes RENDER instead
+# of showing mojibake (the legacy cp437/cp1252 console shows "Bot ready" as
+# garbage otherwise). chcp + Console.OutputEncoding together cover both the
+# native code page and PowerShell's own re-encoding through the pipe.
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
+try {
+    chcp 65001 > $null
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch { }
 $env:CUDA_VISIBLE_DEVICES = "0"
 $env:LLAMA_URL      = "http://localhost:8080/v1"
 $env:CHATTERBOX_URL = "http://localhost:8123"
