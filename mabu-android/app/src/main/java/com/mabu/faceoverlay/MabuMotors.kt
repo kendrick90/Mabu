@@ -7,47 +7,81 @@ import android.util.Log
  * over /dev/ttyS1 at 57600 8N1. See notes/motor-protocol.md for the
  * byte-level reference -- this file is intentionally line-for-line
  * comparable to the Python version so behavior stays in sync.
+ *
+ * Serial access: tries the native JNI path (serial.c) first. If that fails
+ * due to SELinux policy, falls back to AdbShellBridge which routes commands
+ * through the local adbd daemon (which has the required shell context).
+ * See selinux/ in the repo root for the permanent policy fix.
  */
 class MabuMotors(
     private val port: String = "/dev/ttyS1",
     private val baud: Int = 57600
 ) {
     private var fd: Int = -1
+    private var adb: AdbShellBridge? = null
     private val lock = Any()
 
     fun open(): Boolean {
         synchronized(lock) {
-            if (fd >= 0) return true
+            if (isOpen()) return true
+
+            // Try native serial first (requires proper SELinux policy)
             val r = SerialPort.openTty(port, baud)
-            if (r < 0) {
-                Log.e(TAG, "openTty failed: errno=${-r}")
-                return false
+            if (r >= 0) {
+                fd = r
+                powerOn()
+                Log.i(TAG, "Mabu motors opened native fd=$fd")
+                return true
             }
-            fd = r
-            powerOn()
-            Log.i(TAG, "Mabu motors opened fd=$fd")
-            return true
+            Log.w(TAG, "Native serial failed (errno=${-r}), falling back to ADB bridge")
+
+            // Fall back to ADB-over-localhost (temporary until SELinux patch applied)
+            val bridge = AdbShellBridge()
+            if (bridge.connect()) {
+                adb = bridge
+                // Configure serial port through the shell
+                bridge.exec("busybox stty -F $port $baud raw")
+                Thread.sleep(300)
+                powerOn()
+                Log.i(TAG, "Mabu motors opened via ADB bridge")
+                return true
+            }
+
+            Log.e(TAG, "Both native serial and ADB bridge failed")
+            return false
         }
     }
 
     fun close() {
         synchronized(lock) {
-            if (fd < 0) return
-            try { powerOff() } catch (_: Throwable) {}
-            SerialPort.closeTty(fd)
-            fd = -1
+            if (fd >= 0) {
+                try { powerOff() } catch (_: Throwable) {}
+                SerialPort.closeTty(fd)
+                fd = -1
+            }
+            adb?.let {
+                try { powerOff() } catch (_: Throwable) {}
+                it.close()
+                adb = null
+            }
         }
     }
 
-    fun isOpen(): Boolean = fd >= 0
+    fun isOpen(): Boolean = fd >= 0 || adb?.isConnected == true
 
-    // ---- low-level I/O ---------------------------------------------------
+    // ── low-level I/O ──────────────────────────────────────────────────────
 
     private fun send(bytes: ByteArray) {
         synchronized(lock) {
-            if (fd < 0) return
-            val n = SerialPort.writeBytes(fd, bytes, 0, bytes.size)
-            if (n < 0) Log.w(TAG, "writeBytes failed errno=${-n}")
+            val bridge = adb
+            if (bridge != null && bridge.isConnected) {
+                // ADB path: convert frame bytes to a printf shell command
+                val hex = bytes.joinToString("") { "\\x%02x".format(it.toInt() and 0xFF) }
+                bridge.exec("printf '$hex' > $port")
+            } else if (fd >= 0) {
+                val n = SerialPort.writeBytes(fd, bytes, 0, bytes.size)
+                if (n < 0) Log.w(TAG, "writeBytes failed errno=${-n}")
+            }
         }
     }
 
@@ -61,7 +95,7 @@ class MabuMotors(
         return head + byteArrayOf((ck ushr 8).toByte(), ck.toByte())
     }
 
-    // ---- protocol primitives --------------------------------------------
+    // ── protocol primitives ────────────────────────────────────────────────
 
     fun powerOn() {
         send(byteArrayOf(0xFA.toByte(), 0x00, 0x02, 0x4F, 0x7F, 0x0B, 0xCB.toByte()))
@@ -107,15 +141,22 @@ class MabuMotors(
     }
 
     /**
-     * Neutral pose tuned for unit 4: eyelids at a relaxed half-position (so
-     * the robot looks alive, not wide-eyed and surprised), other motors at
-     * mechanical center. See memory:motor-calibration-unit4 for the eyelid
-     * inversion that makes value=25 "natural rest" on this unit.
+     * Neutral pose: eyelids at natural rest, all other motors centered.
      */
     fun restingPose() = move(
         eyelidLeft = EYELID_NEUTRAL, eyelidRight = EYELID_NEUTRAL,
         eyesLR = 50f, eyesUD = 50f,
         neckElev = 50f, neckRot = 50f, neckTilt = 50f
+    )
+
+    /**
+     * Sleep pose: eyelids closed, neck lowered and tilted slightly down.
+     * Used on shutdown so Mabu looks like it's resting rather than frozen.
+     */
+    fun sleepPose() = move(
+        eyelidLeft = EYELID_CLOSED, eyelidRight = EYELID_CLOSED,
+        eyesLR = 50f, eyesUD = 50f,
+        neckElev = 30f, neckRot = 50f, neckTilt = 60f
     )
 
     fun eyesOpen()    = move(eyelidLeft = EYELID_OPEN,    eyelidRight = EYELID_OPEN)
@@ -147,7 +188,7 @@ class MabuMotors(
         // Per-unit-4 eyelid calibration: inverted from mabu.py's labels.
         // Higher value = more closed on this unit.
         const val EYELID_OPEN    = 5f   // wide open (surprised)
-        const val EYELID_NEUTRAL = 25f  // natural rest -- like a real person
+        const val EYELID_NEUTRAL = 25f  // natural rest
         const val EYELID_CLOSED  = 90f  // blink / closed
 
         private fun v100ToByte(v: Float): Byte {
@@ -155,7 +196,6 @@ class MabuMotors(
             return n.toByte()
         }
 
-        /** Fletcher-8 checksum used by the motor board. Hi byte first on the wire. */
         fun fletcher8(data: ByteArray): Int {
             var s1 = 0; var s2 = 0
             for (b in data) {

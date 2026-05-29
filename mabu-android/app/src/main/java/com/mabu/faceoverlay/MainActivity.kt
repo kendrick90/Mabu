@@ -632,7 +632,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         handler.removeCallbacksAndMessages(null)
         cameraSource?.release()
-        try { motors.restingPose() } catch (_: Throwable) {}
+        try { motors.sleepPose(); Thread.sleep(400) } catch (_: Throwable) {}
         motors.close()
         try { tts.shutdown() } catch (_: Throwable) {}
         try { asr?.release() } catch (_: Throwable) {}
