@@ -97,8 +97,8 @@ Recompute checksum if NR_NEUTRAL or NT_NEUTRAL changes.
 | ELR   | 50      | Confirmed |
 | EUD   | 50      | Confirmed |
 | NE    | 25      | Mechanical rest position at boot |
-| NR    | ~40     | **50 causes visible left twist** — tuning in progress |
-| NT    | ~45     | **50 causes visible right tilt** — tuning in progress |
+| NR    | 42      | Community observed wire=0x6B=107≈42. **50 causes left twist on this unit.** |
+| NT    | 45      | Community observed wire=0x72=114≈45. **50 causes right tilt on this unit.** |
 
 ---
 

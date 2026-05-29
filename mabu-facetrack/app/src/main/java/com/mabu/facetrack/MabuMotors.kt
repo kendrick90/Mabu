@@ -184,7 +184,7 @@ class MabuMotors {
         // NR: 50 causes left twist on this unit — tuning in progress.
         // NT: 50 causes right tilt on this unit — tuning in progress.
         const val NE_NEUTRAL     = 25.0
-        const val NR_NEUTRAL     = 40.0  // tune: lower fixes left twist
+        const val NR_NEUTRAL     = 42.0  // community observed: wire=0x6B=107 → ~42 logical
         const val NT_NEUTRAL     = 45.0  // tune: lower fixes right tilt (unconfirmed direction)
         const val EYELID_NEUTRAL = 25.0
     }
