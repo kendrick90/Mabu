@@ -1,4 +1,4 @@
-package com.mabu.faceoverlay
+package com.mabu.anima
 
 import android.content.Context
 import android.graphics.Canvas
@@ -19,6 +19,10 @@ class FaceOverlayView @JvmOverloads constructor(
     @Volatile private var result: FaceResult? = null
     @Volatile private var imageFlipped: Boolean = true
     @Volatile private var primaryTrackingId: Int? = null
+
+    // Live transcript ("what Mabu hears"). Shown as a speech bubble by the face
+    // only when exactly one face is detected.
+    @Volatile private var heardText: String? = null
 
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -63,11 +67,30 @@ class FaceOverlayView @JvmOverloads constructor(
         strokeCap = Paint.Cap.ROUND
         color = Color.argb(240, 255, 90, 90)
     }
+    private val bubbleBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.argb(225, 25, 25, 32)
+    }
+    private val bubbleStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+        color = Color.argb(235, 80, 255, 120)
+    }
+    private val bubbleTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textSize = 34f
+    }
 
     fun setResult(r: FaceResult, isFrontFacing: Boolean, primaryId: Int? = null) {
         result = r
         imageFlipped = isFrontFacing
         primaryTrackingId = primaryId
+        postInvalidate()
+    }
+
+    /** Set the live "what Mabu hears" text (null/blank hides the bubble). */
+    fun setHeardText(text: String?) {
+        heardText = text?.takeIf { it.isNotBlank() }
         postInvalidate()
     }
 
@@ -147,8 +170,102 @@ class FaceOverlayView @JvmOverloads constructor(
                 val ty = (t - 12f).coerceAtLeast(textPaint.textSize)
                 canvas.drawText(sb.toString(), l, ty, textPaint)
             }
+
+            // Speech bubble of what Mabu currently hears -- only when exactly
+            // one face is present (per request: a single addressed speaker).
+            val heard = heardText
+            if (r.faces.size == 1 && !heard.isNullOrBlank()) {
+                drawSpeechBubble(canvas, l, t, rg, b, heard, viewW, viewH)
+            }
         }
         drawFaceInset(canvas, r)
+    }
+
+    /**
+     * A rounded speech bubble above the face (flips below if there's no room),
+     * horizontally clamped to the view, with a small tail pointing at the face.
+     * Text is word-wrapped to [BUBBLE_MAX_WIDTH_FRAC] of the view width and
+     * capped at [BUBBLE_MAX_LINES].
+     */
+    private fun drawSpeechBubble(
+        canvas: Canvas,
+        faceL: Float, faceT: Float, faceR: Float, faceB: Float,
+        text: String, viewW: Float, viewH: Float
+    ) {
+        val padH = 22f
+        val padV = 16f
+        val maxTextW = viewW * BUBBLE_MAX_WIDTH_FRAC - 2 * padH
+        val lines = wrapText(text, bubbleTextPaint, maxTextW, BUBBLE_MAX_LINES)
+        if (lines.isEmpty()) return
+
+        val lineH = bubbleTextPaint.fontSpacing
+        val textW = lines.maxOf { bubbleTextPaint.measureText(it) }
+        val bubbleW = textW + 2 * padH
+        val bubbleH = lines.size * lineH + 2 * padV
+
+        val faceCx = (faceL + faceR) / 2f
+        var left = (faceCx - bubbleW / 2f).coerceIn(8f, viewW - bubbleW - 8f)
+        val gap = 18f
+        // Prefer above the face; if it would clip the top, put it below.
+        val above = faceT - gap - bubbleH >= 8f
+        var top = if (above) faceT - gap - bubbleH else faceB + gap
+        top = top.coerceIn(8f, viewH - bubbleH - 8f)
+
+        val rect = android.graphics.RectF(left, top, left + bubbleW, top + bubbleH)
+        canvas.drawRoundRect(rect, 20f, 20f, bubbleBgPaint)
+        canvas.drawRoundRect(rect, 20f, 20f, bubbleStrokePaint)
+
+        // Tail: a small triangle from the bubble edge toward the face center.
+        val tailX = faceCx.coerceIn(left + 24f, left + bubbleW - 24f)
+        val tail = android.graphics.Path()
+        if (above) {
+            tail.moveTo(tailX - 14f, rect.bottom - 1f)
+            tail.lineTo(tailX + 14f, rect.bottom - 1f)
+            tail.lineTo(tailX, rect.bottom + 18f)
+        } else {
+            tail.moveTo(tailX - 14f, rect.top + 1f)
+            tail.lineTo(tailX + 14f, rect.top + 1f)
+            tail.lineTo(tailX, rect.top - 18f)
+        }
+        tail.close()
+        canvas.drawPath(tail, bubbleBgPaint)
+
+        var ty = top + padV + bubbleTextPaint.textSize
+        for (line in lines) {
+            canvas.drawText(line, left + padH, ty, bubbleTextPaint)
+            ty += lineH
+        }
+    }
+
+    /**
+     * Greedy word-wrap into at most [maxLines]. Only ellipsizes the last line
+     * if there were leftover words that didn't fit (so text that fits exactly
+     * isn't spuriously truncated).
+     */
+    private fun wrapText(text: String, paint: Paint, maxWidth: Float, maxLines: Int): List<String> {
+        val words = text.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val lines = ArrayList<String>()
+        var cur = ""
+        var truncated = false
+        for (w in words) {
+            val candidate = if (cur.isEmpty()) w else "$cur $w"
+            if (paint.measureText(candidate) <= maxWidth || cur.isEmpty()) {
+                cur = candidate
+            } else {
+                lines.add(cur)
+                cur = w
+                if (lines.size == maxLines) { truncated = true; cur = ""; break }
+            }
+        }
+        if (!truncated && cur.isNotEmpty() && lines.size < maxLines) lines.add(cur)
+        if (truncated && lines.isNotEmpty()) {
+            var last = lines.last() + "…"
+            while (paint.measureText(last) > maxWidth && last.length > 1) {
+                last = last.dropLast(2) + "…"
+            }
+            lines[lines.size - 1] = last
+        }
+        return lines
     }
 
     /**
@@ -238,6 +355,9 @@ class FaceOverlayView @JvmOverloads constructor(
     }
 
     companion object {
+        private const val BUBBLE_MAX_WIDTH_FRAC = 0.5f
+        private const val BUBBLE_MAX_LINES = 4
+
         private val CONTOUR_TYPES = intArrayOf(
             FaceContour.FACE,
             FaceContour.LEFT_EYEBROW_TOP, FaceContour.LEFT_EYEBROW_BOTTOM,

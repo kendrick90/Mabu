@@ -104,11 +104,11 @@ directory of files, not a zip).
 .\gradlew.bat installDebug
 
 # Pre-grant the runtime permissions so the app doesn't have to prompt
-adb shell pm grant com.mabu.faceoverlay android.permission.CAMERA
-adb shell pm grant com.mabu.faceoverlay android.permission.RECORD_AUDIO
-adb shell pm grant com.mabu.faceoverlay android.permission.READ_EXTERNAL_STORAGE
+adb shell pm grant com.mabu.anima android.permission.CAMERA
+adb shell pm grant com.mabu.anima android.permission.RECORD_AUDIO
+adb shell pm grant com.mabu.anima android.permission.READ_EXTERNAL_STORAGE
 
-adb shell am start -n com.mabu.faceoverlay/.MainActivity
+adb shell am start -n com.mabu.anima/.MainActivity
 ```
 
 ### 6 · Verify
@@ -133,10 +133,10 @@ What you should see / hear:
 The app registers a few broadcasts for headless testing:
 
 ```powershell
-adb shell "am broadcast -a com.mabu.faceoverlay.SPEAK --es text 'hello'"
-adb shell "am broadcast -a com.mabu.faceoverlay.LLM --es prompt 'who are you' --ez speak true"
-adb shell "am broadcast -a com.mabu.faceoverlay.SET_MODE --es mode PUPPET"
-adb shell "am broadcast -a com.mabu.faceoverlay.SET_TTS_VOLUME --ef volume 0.18"
+adb shell "am broadcast -a com.mabu.anima.SPEAK --es text 'hello'"
+adb shell "am broadcast -a com.mabu.anima.LLM --es prompt 'who are you' --ez speak true"
+adb shell "am broadcast -a com.mabu.anima.SET_MODE --es mode PUPPET"
+adb shell "am broadcast -a com.mabu.anima.SET_TTS_VOLUME --ef volume 0.18"
 ```
 
 ### Screenshot

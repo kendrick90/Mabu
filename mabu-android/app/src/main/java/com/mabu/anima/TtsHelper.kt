@@ -1,10 +1,14 @@
-package com.mabu.faceoverlay
+package com.mabu.anima
 
 import android.content.Context
 import android.media.AudioManager
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Thin wrapper around Android's TextToSpeech. On the Mabu only Pico TTS
@@ -16,7 +20,23 @@ class TtsHelper(context: Context) {
     @Volatile var ready: Boolean = false
         private set
 
+    /**
+     * Notified when speech starts (true) and fully finishes (false). The
+     * "false" edge is debounced by [DRAIN_DEBOUNCE_MS] so the brief gap between
+     * consecutive queued sentences (streaming TTS) doesn't flap it. Used to
+     * gate the always-on mic so Mabu doesn't transcribe its own voice.
+     */
+    @Volatile var onSpeakingChanged: ((Boolean) -> Unit)? = null
+
+    @Volatile var isSpeaking: Boolean = false
+        private set
+
     private val audio = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val handler = Handler(Looper.getMainLooper())
+
+    // Count of utterances queued-but-not-yet-finished. Goes >0 the moment we
+    // queue speech and back to 0 once the queue drains.
+    private val pending = AtomicInteger(0)
 
     private val tts: TextToSpeech = TextToSpeech(context.applicationContext) { status ->
         ready = (status == TextToSpeech.SUCCESS)
@@ -28,6 +48,34 @@ class TtsHelper(context: Context) {
         // queued; if it's already ready (race with the listener) it just
         // applies immediately.
         tts.language = Locale.US
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) = onUtteranceBegan()
+            override fun onDone(utteranceId: String?) = onUtteranceEnded()
+            @Deprecated("deprecated in API 21") override fun onError(utteranceId: String?) = onUtteranceEnded()
+            override fun onError(utteranceId: String?, errorCode: Int) = onUtteranceEnded()
+            override fun onStop(utteranceId: String?, interrupted: Boolean) = onUtteranceEnded()
+        })
+    }
+
+    private fun onUtteranceBegan() {
+        if (!isSpeaking) {
+            isSpeaking = true
+            handler.post { onSpeakingChanged?.invoke(true) }
+        }
+    }
+
+    private fun onUtteranceEnded() {
+        // Decrement; when the queue is empty, debounce before declaring done so
+        // a tiny inter-sentence gap doesn't briefly unmute the mic.
+        if (pending.decrementAndGet() <= 0) {
+            pending.set(0)
+            handler.postDelayed({
+                if (pending.get() == 0 && isSpeaking) {
+                    isSpeaking = false
+                    onSpeakingChanged?.invoke(false)
+                }
+            }, DRAIN_DEBOUNCE_MS)
+        }
     }
 
     /**
@@ -58,7 +106,9 @@ class TtsHelper(context: Context) {
         // Utterance IDs need to be unique when queueing -- otherwise Pico
         // can drop subsequent fragments thinking they're duplicates.
         val utterId = "mabu-${System.nanoTime()}"
-        tts.speak(clean, queueMode, null, utterId)
+        pending.incrementAndGet()
+        val rc = tts.speak(clean, queueMode, null, utterId)
+        if (rc != TextToSpeech.SUCCESS) onUtteranceEnded()  // never started; undo
     }
 
     /**
@@ -82,11 +132,23 @@ class TtsHelper(context: Context) {
             for (c in replaced) if (c.code in 0x20..0x7E) append(c)
         }
         // Pico has internal buffer limits; long inputs can trip them.
-        return cleaned.take(800).trim()
+        val trimmed = cleaned.take(800).trim()
+        if (trimmed.isEmpty()) return ""
+        // picobase_get_next_utf8char over-reads one token past the end of the
+        // buffer (SIGSEGV when the byte there isn't valid UTF-8). A trailing
+        // space gives the tokenizer a safe boundary and dodges the crash.
+        return "$trimmed "
     }
 
     fun stop() {
         tts.stop()
+        // onStop callbacks may or may not fire for flushed utterances depending
+        // on the engine; reset deterministically so the counter can't drift.
+        pending.set(0)
+        if (isSpeaking) {
+            isSpeaking = false
+            handler.post { onSpeakingChanged?.invoke(false) }
+        }
     }
 
     fun shutdown() {
@@ -97,5 +159,8 @@ class TtsHelper(context: Context) {
 
     companion object {
         private const val TAG = "MabuTTS"
+        // Grace period after the queue drains before declaring speech done,
+        // covering inter-sentence gaps in streaming TTS + speaker drain time.
+        private const val DRAIN_DEBOUNCE_MS = 500L
     }
 }

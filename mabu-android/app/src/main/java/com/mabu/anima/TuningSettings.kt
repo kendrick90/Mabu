@@ -1,4 +1,4 @@
-package com.mabu.faceoverlay
+package com.mabu.anima
 
 import android.content.SharedPreferences
 
@@ -67,6 +67,9 @@ class TuningSettings {
     /** "local" = LlamaInference on-device; "streaming" = llama-server on LAN. */
     var cognitionMode = "streaming"
     var llmServerUrl  = "http://10.0.0.49:8080"
+    /** WhisperLive WebSocket ASR server (streaming mode). Vosk is the local
+     *  fallback when cognitionMode != "streaming". */
+    var asrServerUrl  = "ws://10.0.0.49:9090"
 
     fun load(prefs: SharedPreferences) {
         gazeGain           = prefs.getFloat("gazeGain",           gazeGain)
@@ -93,6 +96,7 @@ class TuningSettings {
         neckFollowGain     = prefs.getFloat("neckFollowGain",     neckFollowGain)
         cognitionMode      = prefs.getString("cognitionMode",     cognitionMode) ?: cognitionMode
         llmServerUrl       = prefs.getString("llmServerUrl",      llmServerUrl)  ?: llmServerUrl
+        asrServerUrl       = prefs.getString("asrServerUrl",      asrServerUrl)  ?: asrServerUrl
     }
 
     fun save(prefs: SharedPreferences) {
@@ -121,6 +125,7 @@ class TuningSettings {
             putFloat("neckFollowGain",     neckFollowGain)
             putString("cognitionMode",     cognitionMode)
             putString("llmServerUrl",      llmServerUrl)
+            putString("asrServerUrl",      asrServerUrl)
             apply()
         }
     }
@@ -152,6 +157,7 @@ class TuningSettings {
         neckFollowGain     = 0.4f
         cognitionMode      = "streaming"
         llmServerUrl       = "http://10.0.0.49:8080"
+        asrServerUrl       = "ws://10.0.0.49:9090"
     }
 
     /** Nuclear reset: blow away calibration too. Use only when re-installing. */

@@ -21,7 +21,7 @@ static llama_sampler* g_smpl  = nullptr;
 static bool g_backend_inited = false;
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_mabu_faceoverlay_LlamaInference_nativeLoadModel(
+Java_com_mabu_anima_LlamaInference_nativeLoadModel(
         JNIEnv* env, jclass /*cls*/,
         jstring jpath, jint ctxSize, jint nThreads, jfloat temperature, jint topK, jfloat topP) {
     if (g_model) {
@@ -72,7 +72,7 @@ Java_com_mabu_faceoverlay_LlamaInference_nativeLoadModel(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_mabu_faceoverlay_LlamaInference_nativeGenerate(
+Java_com_mabu_anima_LlamaInference_nativeGenerate(
         JNIEnv* env, jclass /*cls*/, jstring jprompt, jint maxTokens) {
     if (!g_model || !g_ctx || !g_smpl) {
         LOGE("not loaded");
@@ -132,7 +132,7 @@ Java_com_mabu_faceoverlay_LlamaInference_nativeGenerate(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_mabu_faceoverlay_LlamaInference_nativeRelease(JNIEnv* /*env*/, jclass /*cls*/) {
+Java_com_mabu_anima_LlamaInference_nativeRelease(JNIEnv* /*env*/, jclass /*cls*/) {
     if (g_smpl) { llama_sampler_free(g_smpl); g_smpl = nullptr; }
     if (g_ctx)  { llama_free(g_ctx);          g_ctx  = nullptr; }
     if (g_model){ llama_model_free(g_model);  g_model= nullptr; }
@@ -140,30 +140,30 @@ Java_com_mabu_faceoverlay_LlamaInference_nativeRelease(JNIEnv* /*env*/, jclass /
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_mabu_faceoverlay_LlamaInference_nativeAvailable(JNIEnv*, jclass) {
+Java_com_mabu_anima_LlamaInference_nativeAvailable(JNIEnv*, jclass) {
     return JNI_TRUE;
 }
 
 #else  // MABU_HAS_LLAMA -- llama.cpp source not present, stub everything
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_mabu_faceoverlay_LlamaInference_nativeLoadModel(
+Java_com_mabu_anima_LlamaInference_nativeLoadModel(
         JNIEnv*, jclass, jstring, jint, jint, jfloat, jint, jfloat) {
     LOGE("llama.cpp not built in -- run setup-llama.ps1");
     return JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_mabu_faceoverlay_LlamaInference_nativeGenerate(
+Java_com_mabu_anima_LlamaInference_nativeGenerate(
         JNIEnv* env, jclass, jstring, jint) {
     return env->NewStringUTF("");
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_mabu_faceoverlay_LlamaInference_nativeRelease(JNIEnv*, jclass) {}
+Java_com_mabu_anima_LlamaInference_nativeRelease(JNIEnv*, jclass) {}
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_mabu_faceoverlay_LlamaInference_nativeAvailable(JNIEnv*, jclass) {
+Java_com_mabu_anima_LlamaInference_nativeAvailable(JNIEnv*, jclass) {
     return JNI_FALSE;
 }
 

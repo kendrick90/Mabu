@@ -27,7 +27,7 @@ static speed_t baud_to_speed(int baud) {
 }
 
 JNIEXPORT jint JNICALL
-Java_com_mabu_faceoverlay_SerialPort_openTty(JNIEnv* env, jclass cls,
+Java_com_mabu_anima_SerialPort_openTty(JNIEnv* env, jclass cls,
                                               jstring jpath, jint baud) {
     const char* path = (*env)->GetStringUTFChars(env, jpath, NULL);
     int fd = open(path, O_RDWR | O_NOCTTY);
@@ -70,7 +70,7 @@ Java_com_mabu_faceoverlay_SerialPort_openTty(JNIEnv* env, jclass cls,
 }
 
 JNIEXPORT jint JNICALL
-Java_com_mabu_faceoverlay_SerialPort_writeBytes(JNIEnv* env, jclass cls,
+Java_com_mabu_anima_SerialPort_writeBytes(JNIEnv* env, jclass cls,
                                                  jint fd, jbyteArray data,
                                                  jint off, jint len) {
     if (fd < 0) return -1;
@@ -85,6 +85,6 @@ Java_com_mabu_faceoverlay_SerialPort_writeBytes(JNIEnv* env, jclass cls,
 }
 
 JNIEXPORT void JNICALL
-Java_com_mabu_faceoverlay_SerialPort_closeTty(JNIEnv* env, jclass cls, jint fd) {
+Java_com_mabu_anima_SerialPort_closeTty(JNIEnv* env, jclass cls, jint fd) {
     if (fd >= 0) close(fd);
 }

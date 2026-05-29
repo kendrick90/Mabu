@@ -4,12 +4,12 @@ plugins {
 }
 
 android {
-    namespace = "com.mabu.faceoverlay"
+    namespace = "com.mabu.anima"
     compileSdk = 34
     ndkVersion = "26.1.10909125"
 
     defaultConfig {
-        applicationId = "com.mabu.faceoverlay"
+        applicationId = "com.mabu.anima"
         minSdk = 24
         targetSdk = 28
         versionCode = 1

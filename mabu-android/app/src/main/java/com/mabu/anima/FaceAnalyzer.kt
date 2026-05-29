@@ -1,4 +1,4 @@
-package com.mabu.faceoverlay
+package com.mabu.anima
 
 import android.graphics.Bitmap
 import android.graphics.PointF

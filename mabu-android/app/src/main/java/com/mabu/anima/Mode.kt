@@ -1,4 +1,4 @@
-package com.mabu.faceoverlay
+package com.mabu.anima
 
 enum class Mode {
     /** Eyes track the user's face, with lifelike saccades / glances / blinks. */

@@ -47,17 +47,17 @@ HTTP request/response if streaming is feasible.
 The app registers a debug `BroadcastReceiver` (in `MainActivity.
 registerDebugReceiver`) so a host can drive it entirely over ADB —
 no touching the screen. **Broadcasts must target the package
-explicitly (`-p com.mabu.faceoverlay`)**, otherwise Android 8.0+'s
+explicitly (`-p com.mabu.anima`)**, otherwise Android 8.0+'s
 implicit-broadcast restriction silently drops them (you'll see
 "Broadcast completed: result=0" but `onReceive` never fires). Quote the
 text for the *device* shell (single quotes inside the `adb shell "…"`
 double quotes) or spaces truncate the extra.
 
 ```
-adb shell "am broadcast -a com.mabu.faceoverlay.SAY   -p com.mabu.faceoverlay --es text 'how are you today?'"
-adb shell "am broadcast -a com.mabu.faceoverlay.SPEAK -p com.mabu.faceoverlay --es text 'hello there'"
-adb shell "am broadcast -a com.mabu.faceoverlay.MODE  -p com.mabu.faceoverlay --es mode PUPPET"
-adb shell "am broadcast -a com.mabu.faceoverlay.STOP  -p com.mabu.faceoverlay"
+adb shell "am broadcast -a com.mabu.anima.SAY   -p com.mabu.anima --es text 'how are you today?'"
+adb shell "am broadcast -a com.mabu.anima.SPEAK -p com.mabu.anima --es text 'hello there'"
+adb shell "am broadcast -a com.mabu.anima.MODE  -p com.mabu.anima --es mode PUPPET"
+adb shell "am broadcast -a com.mabu.anima.STOP  -p com.mabu.anima"
 ```
 
 - `SAY` — full ASR-equivalent path: LLM → streaming TTS (use this to
@@ -105,12 +105,12 @@ adb shell "am broadcast -a com.mabu.faceoverlay.STOP  -p com.mabu.faceoverlay"
 
 | File | Purpose |
 |---|---|
-| `app/src/main/java/com/mabu/faceoverlay/StreamingLlama.kt` | Just-added SSE client for `llama-server`. Sentence boundary detection + history. |
-| `app/src/main/java/com/mabu/faceoverlay/MainActivity.kt` | `onTranscript` dispatches to `respondStreaming` or `respondLocal` based on `tuning.cognitionMode`. |
-| `app/src/main/java/com/mabu/faceoverlay/TuningSettings.kt` | `cognitionMode`, `llmServerUrl` added at the bottom. |
-| `app/src/main/java/com/mabu/faceoverlay/TtsHelper.kt` | `speak(text, volume, queueAdd)` — pass `queueAdd=true` for the second+ sentences in a stream so they don't FLUSH each other. |
-| `app/src/main/java/com/mabu/faceoverlay/LlamaInference.kt` | On-device fallback. Pinned llama.cpp commit `07eaf919e` (the next commit broke ARMv7 with a fused RMS-norm op). |
-| `app/src/main/java/com/mabu/faceoverlay/AsrEngine.kt` | Vosk wrapper. **Do not** call `recognizer.reset()` after `speechService.stop()` — that races and SIGSEGVs Vosk's audio thread on this build. |
+| `app/src/main/java/com/mabu/anima/StreamingLlama.kt` | Just-added SSE client for `llama-server`. Sentence boundary detection + history. |
+| `app/src/main/java/com/mabu/anima/MainActivity.kt` | `onTranscript` dispatches to `respondStreaming` or `respondLocal` based on `tuning.cognitionMode`. |
+| `app/src/main/java/com/mabu/anima/TuningSettings.kt` | `cognitionMode`, `llmServerUrl` added at the bottom. |
+| `app/src/main/java/com/mabu/anima/TtsHelper.kt` | `speak(text, volume, queueAdd)` — pass `queueAdd=true` for the second+ sentences in a stream so they don't FLUSH each other. |
+| `app/src/main/java/com/mabu/anima/LlamaInference.kt` | On-device fallback. Pinned llama.cpp commit `07eaf919e` (the next commit broke ARMv7 with a fused RMS-norm op). |
+| `app/src/main/java/com/mabu/anima/AsrEngine.kt` | Vosk wrapper. **Do not** call `recognizer.reset()` after `speechService.stop()` — that races and SIGSEGVs Vosk's audio thread on this build. |
 | `setup-llama.ps1` | Re-clones llama.cpp at the pinned commit. |
 | `C:\Users\user\Tools\llama-server\run-server.ps1` | Starts llama-server on the PC. |
 

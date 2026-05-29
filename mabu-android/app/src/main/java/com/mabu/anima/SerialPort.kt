@@ -1,4 +1,4 @@
-package com.mabu.faceoverlay
+package com.mabu.anima
 
 object SerialPort {
     init { System.loadLibrary("mabuserial") }

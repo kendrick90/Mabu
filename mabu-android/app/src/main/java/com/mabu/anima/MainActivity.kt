@@ -1,4 +1,4 @@
-package com.mabu.faceoverlay
+package com.mabu.anima
 
 import android.Manifest
 import android.content.BroadcastReceiver
@@ -35,7 +35,17 @@ class MainActivity : AppCompatActivity() {
     private val attention = AttentionTracker()
     private val tts by lazy { TtsHelper(this) }
     private var asr: AsrEngine? = null
+    private var remoteAsr: RemoteAsr? = null
     private lateinit var micButton: TextView
+
+    // Safety net: if TTS never reports "done" (e.g. Pico SIGSEGVs mid-speech),
+    // the echo-guard mute would stick and Mabu would go deaf. This re-opens the
+    // mic after a generous timeout; it's cancelled on a normal speech-done.
+    private val safetyUnmute = Runnable {
+        Log.w(TAG, "TTS watchdog fired: re-opening mic (TTS likely crashed mid-speech)")
+        remoteAsr?.muted = false
+        if (tuning.cognitionMode == "streaming") micButton.text = "🎤 listening… (tap=mute)"
+    }
     private var streamingLlm: StreamingLlama? = null
 
     // Debug control receiver -- lets a host drive the app over ADB without
@@ -200,6 +210,13 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Motor open failed -- face overlay only", Toast.LENGTH_LONG).show()
         }
 
+        // TEMP (audio-pipeline iteration): start in SLEEP so Mabu sits still
+        // (eyelids closed, neck centered, no saccades/glances) while we work on
+        // the ASR/TTS path. Revert to Mode.FOLLOW default when done. setMode
+        // applies the preset (the mode field still defaults to FOLLOW, so this
+        // passes the equality guard).
+        setMode(Mode.SLEEP)
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED) {
             startCamera()
@@ -213,66 +230,97 @@ class MainActivity : AppCompatActivity() {
                 this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_RECORD_AUDIO
             )
         }
-        // Load LLM FIRST, then Vosk. The Qwen GGUF needs ~470 MB of
-        // contiguous virtual address space and we're on 32-bit ARM, so it
-        // can't be allocated after Vosk + ML Kit + camera have fragmented
-        // our VA layout. Pre-loading at startup gets it the first dibs.
-        //
-        // In streaming mode cognition lives on the PC, so we skip the local
-        // preload entirely -- it would otherwise burn ~470 MB of VA for a
-        // fallback that's never hit. Flip cognitionMode to "local" (settings
-        // / prefs) to bring it back.
-        val preloadLocalLlm = tuning.cognitionMode != "streaming"
-        Thread {
-            val llmOk = if (preloadLocalLlm) {
+        if (tuning.cognitionMode == "streaming") {
+            // Remote brain: ASR (WhisperLive WS) and LLM (llama-server SSE)
+            // both live on the PC. Skip the on-device LLM preload AND Vosk --
+            // neither is needed, and on 2 GB / 32-bit ARM every MB of VA we
+            // don't fragment helps. RemoteAsr construction is instant (no
+            // model load); the WS connects lazily on first push-to-talk.
+            remoteAsr = RemoteAsr(
+                baseWsUrl = tuning.asrServerUrl,
+                onFinal = { transcript -> handler.post { onTranscript(transcript) } },
+                onPartial = { partial -> handler.post {
+                    if (remoteAsr?.muted != true) {
+                        micButton.text = "🎤 …$partial"
+                        overlayView.setHeardText(partial)   // speech bubble by the face
+                    }
+                } }
+            )
+            // Hands-free: mute the mic whenever Mabu is speaking so it never
+            // transcribes its own TTS into a feedback loop.
+            tts.onSpeakingChanged = { speaking ->
+                remoteAsr?.muted = speaking
+                handler.post {
+                    if (!speaking) {
+                        handler.removeCallbacks(safetyUnmute)   // normal finish
+                        micButton.text = "🎤 listening… (tap=mute)"
+                        overlayView.setHeardText(null)          // clear the bubble
+                    }
+                }
+            }
+            remoteAsr?.start()      // always-on listening, no button
+            Log.i(TAG, "streaming mode: RemoteAsr -> ${tuning.asrServerUrl}; " +
+                "local LLM + Vosk skipped; always-on listening")
+            micButton.text = "🎤 listening… (tap=mute)"
+        } else {
+            // Local mode. Load LLM FIRST, then Vosk. The Qwen GGUF needs
+            // ~470 MB of contiguous virtual address space and we're on 32-bit
+            // ARM, so it can't be allocated after Vosk + ML Kit + camera have
+            // fragmented our VA layout. Pre-loading at startup gets first dibs.
+            Thread {
                 handler.post { micButton.text = "🎤 loading LLM…" }
-                val ok = LlamaInference.load(
+                val llmOk = LlamaInference.load(
                     "/data/local/tmp/mabu.gguf", ctxSize = 1024, threads = 4
                 )
-                Log.i(TAG, "LLM preload: ${if (ok) "ok" else "FAILED"}")
-                ok
-            } else {
-                Log.i(TAG, "LLM preload skipped (cognitionMode=streaming)")
-                false
-            }
+                Log.i(TAG, "LLM preload: ${if (llmOk) "ok" else "FAILED"}")
 
-            handler.post { micButton.text = "🎤 loading ASR…" }
-            asr = AsrEngine(
-                modelPath = ASR_MODEL_PATH,
-                onFinal = { transcript -> handler.post { onTranscript(transcript) } },
-                onPartial = { partial ->
-                    handler.post { micButton.text = "🎤 …$partial" }
+                handler.post { micButton.text = "🎤 loading ASR…" }
+                asr = AsrEngine(
+                    modelPath = ASR_MODEL_PATH,
+                    onFinal = { transcript -> handler.post { onTranscript(transcript) } },
+                    onPartial = { partial ->
+                        handler.post { micButton.text = "🎤 …$partial" }
+                    }
+                )
+                handler.post {
+                    micButton.text = if (asr?.isReady == true && llmOk) {
+                        "🎤 hold to talk"
+                    } else if (asr?.isReady == true) {
+                        "🎤 (no LLM)"
+                    } else {
+                        "🎤 (no ASR)"
+                    }
                 }
-            )
-            // In streaming mode the brain is remote, so a local-LLM miss is
-            // expected and not a problem -- only ASR readiness gates the mic.
-            val brainOk = llmOk || tuning.cognitionMode == "streaming"
-            handler.post {
-                micButton.text = if (asr?.isReady == true && brainOk) {
-                    "🎤 hold to talk"
-                } else if (asr?.isReady == true) {
-                    "🎤 (no LLM)"
-                } else {
-                    "🎤 (no ASR)"
-                }
-            }
-        }.start()
+            }.start()
+        }
     }
 
     // ---------- Push-to-talk → ASR → LLM → TTS --------------------------------
 
     private fun onMicDown() {
+        // Streaming mode is hands-free (always-on RemoteAsr): the button is no
+        // longer push-to-talk, just a manual mute/unmute toggle. A tap fires
+        // DOWN; we toggle on DOWN and ignore UP.
+        if (tuning.cognitionMode == "streaming") {
+            val r = remoteAsr ?: return
+            val nowMuted = !r.muted
+            r.muted = nowMuted
+            if (nowMuted) { try { tts.stop() } catch (_: Throwable) {}; overlayView.setHeardText(null) }
+            micButton.text = if (nowMuted) "🔇 muted (tap=listen)" else "🎤 listening… (tap=mute)"
+            return
+        }
+        // Local mode: classic push-to-talk. Mute TTS first; AudioRecord
+        // acquisition can flake if the output stream is still draining, so give
+        // the audio framework a short beat before grabbing the mic.
         val a = asr ?: return
         if (!a.isReady) return
-        // Mute TTS first; AudioRecord acquisition can flake if the output
-        // stream is still draining, so we give the audio framework a
-        // short beat before grabbing the mic.
         try { tts.stop() } catch (_: Throwable) {}
         micButton.text = "🎤 listening…"
         handler.postDelayed({ a.startListening() }, 150)
     }
 
     private fun onMicUp() {
+        if (tuning.cognitionMode == "streaming") return   // toggle handled on DOWN
         val a = asr ?: return
         if (!a.isListening) return
         a.stopListening()
@@ -281,10 +329,23 @@ class MainActivity : AppCompatActivity() {
 
     private fun onTranscript(text: String) {
         Log.i(TAG, "user: $text")
-        micButton.text = "🎤 hold to talk"
         when (tuning.cognitionMode) {
-            "streaming" -> respondStreaming(text)
-            else -> respondLocal(text)
+            "streaming" -> {
+                // Mute the mic for the thinking + speaking window so we don't
+                // transcribe Mabu's own reply. TTS speaking keeps it muted;
+                // the mic re-opens when TTS fully drains (onSpeakingChanged).
+                remoteAsr?.muted = true
+                micButton.text = "🎤 thinking…"
+                overlayView.setHeardText(text)   // keep the heard words on screen
+                // Arm the watchdog in case TTS dies before reporting done.
+                handler.removeCallbacks(safetyUnmute)
+                handler.postDelayed(safetyUnmute, SPEAK_WATCHDOG_MS)
+                respondStreaming(text)
+            }
+            else -> {
+                micButton.text = "🎤 hold to talk"
+                respondLocal(text)
+            }
         }
     }
 
@@ -295,19 +356,27 @@ class MainActivity : AppCompatActivity() {
         ).also { streamingLlm = it }
 
         val t0 = System.currentTimeMillis()
+        var spokeAnything = false
         llm.chat(text, object : StreamingLlama.Listener {
             override fun onSentence(sentence: String, isFirst: Boolean) {
                 val dt = System.currentTimeMillis() - t0
                 Log.i(TAG, "mabu sentence (+${dt}ms, first=$isFirst): $sentence")
+                spokeAnything = true
                 handler.post { tts.speak(sentence, queueAdd = !isFirst) }
             }
             override fun onDone(fullText: String) {
                 Log.i(TAG, "mabu done in ${System.currentTimeMillis() - t0}ms")
+                // If the reply produced no speech, TTS won't drain and the
+                // echo-guard mute would stick -- re-open the mic ourselves.
+                if (!spokeAnything) handler.post { remoteAsr?.muted = false }
             }
             override fun onError(e: Throwable) {
-                Log.e(TAG, "stream error, falling back to local", e)
+                Log.e(TAG, "stream error", e)
                 handler.post {
+                    // This speaks, so TTS drain will re-open the mic; but if TTS
+                    // isn't ready, unmute directly so we don't go deaf.
                     tts.speak("Sorry, I lost connection to my brain.")
+                    if (!tts.ready) remoteAsr?.muted = false
                 }
             }
         })
@@ -336,10 +405,10 @@ class MainActivity : AppCompatActivity() {
      * ADB -- no physical buttons needed. All actions are dispatched onto the
      * main thread. Examples (from a host shell):
      *
-     *   adb shell am broadcast -a com.mabu.faceoverlay.SAY   --es text "how are you?"
-     *   adb shell am broadcast -a com.mabu.faceoverlay.SPEAK --es text "hello there"
-     *   adb shell am broadcast -a com.mabu.faceoverlay.MODE  --es mode PUPPET
-     *   adb shell am broadcast -a com.mabu.faceoverlay.STOP
+     *   adb shell am broadcast -a com.mabu.anima.SAY   --es text "how are you?"
+     *   adb shell am broadcast -a com.mabu.anima.SPEAK --es text "hello there"
+     *   adb shell am broadcast -a com.mabu.anima.MODE  --es mode PUPPET
+     *   adb shell am broadcast -a com.mabu.anima.STOP
      *
      * SAY runs the full ASR-equivalent path (LLM -> streaming TTS); SPEAK is
      * TTS-only; MODE switches the behavior mode; STOP cancels in-flight
@@ -803,6 +872,7 @@ class MainActivity : AppCompatActivity() {
         motors.close()
         try { tts.shutdown() } catch (_: Throwable) {}
         try { asr?.release() } catch (_: Throwable) {}
+        try { remoteAsr?.release() } catch (_: Throwable) {}
         Log.i(TAG, "Released camera + motors + tts + asr")
     }
 
@@ -857,29 +927,29 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- Dev broadcast receiver -- lets adb drive the app -------------
     // Trigger from host:
-    //   adb shell am broadcast -a com.mabu.faceoverlay.SPEAK --es text "hello"
-    //   adb shell am broadcast -a com.mabu.faceoverlay.LLM --es prompt "Who are you?" --ez speak true
-    //   adb shell am broadcast -a com.mabu.faceoverlay.SET_MODE --es mode PUPPET
+    //   adb shell am broadcast -a com.mabu.anima.SPEAK --es text "hello"
+    //   adb shell am broadcast -a com.mabu.anima.LLM --es prompt "Who are you?" --ez speak true
+    //   adb shell am broadcast -a com.mabu.anima.SET_MODE --es mode PUPPET
 
     private val devReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(ctx: android.content.Context?, intent: android.content.Intent?) {
             when (intent?.action) {
-                "com.mabu.faceoverlay.SPEAK" -> {
+                "com.mabu.anima.SPEAK" -> {
                     val text = intent.getStringExtra("text") ?: return
                     Log.i(TAG, "dev SPEAK: $text")
                     tts.speak(text, tuning.ttsVolume)
                 }
-                "com.mabu.faceoverlay.LLM" -> {
+                "com.mabu.anima.LLM" -> {
                     val prompt = intent.getStringExtra("prompt") ?: "Who are you?"
                     val speak = intent.getBooleanExtra("speak", false)
                     runDevLlm(prompt, speak)
                 }
-                "com.mabu.faceoverlay.SET_MODE" -> {
+                "com.mabu.anima.SET_MODE" -> {
                     val name = intent.getStringExtra("mode") ?: return
                     val m = runCatching { Mode.valueOf(name.uppercase()) }.getOrNull() ?: return
                     setMode(m)
                 }
-                "com.mabu.faceoverlay.SET_TTS_VOLUME" -> {
+                "com.mabu.anima.SET_TTS_VOLUME" -> {
                     val v = intent.getFloatExtra("volume", -1f)
                     if (v >= 0f) {
                         tuning.ttsVolume = v
@@ -917,10 +987,10 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         val f = android.content.IntentFilter().apply {
-            addAction("com.mabu.faceoverlay.SPEAK")
-            addAction("com.mabu.faceoverlay.LLM")
-            addAction("com.mabu.faceoverlay.SET_MODE")
-            addAction("com.mabu.faceoverlay.SET_TTS_VOLUME")
+            addAction("com.mabu.anima.SPEAK")
+            addAction("com.mabu.anima.LLM")
+            addAction("com.mabu.anima.SET_MODE")
+            addAction("com.mabu.anima.SET_TTS_VOLUME")
         }
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             registerReceiver(devReceiver, f, RECEIVER_EXPORTED)
@@ -941,10 +1011,15 @@ class MainActivity : AppCompatActivity() {
         private const val REQ_RECORD_AUDIO = 11
 
         // Debug control broadcast actions (drive the app over ADB).
-        private const val ACTION_SAY   = "com.mabu.faceoverlay.SAY"
-        private const val ACTION_SPEAK = "com.mabu.faceoverlay.SPEAK"
-        private const val ACTION_MODE  = "com.mabu.faceoverlay.MODE"
-        private const val ACTION_STOP  = "com.mabu.faceoverlay.STOP"
+        private const val ACTION_SAY   = "com.mabu.anima.SAY"
+        private const val ACTION_SPEAK = "com.mabu.anima.SPEAK"
+        private const val ACTION_MODE  = "com.mabu.anima.MODE"
+        private const val ACTION_STOP  = "com.mabu.anima.STOP"
+
+        // Max time the mic stays muted waiting for TTS to finish. If exceeded
+        // (e.g. Pico crashed), the watchdog re-opens the mic so Mabu can hear
+        // again. Generous so it never clips a normal multi-sentence reply.
+        private const val SPEAK_WATCHDOG_MS = 20000L
 
         private const val ASR_MODEL_PATH = "/sdcard/vosk-model-en"
         private const val MABU_PERSONA =

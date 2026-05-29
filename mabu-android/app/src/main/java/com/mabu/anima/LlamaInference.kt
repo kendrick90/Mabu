@@ -1,4 +1,4 @@
-package com.mabu.faceoverlay
+package com.mabu.anima
 
 /**
  * Kotlin wrapper for the llama.cpp JNI bridge. Single-instance because the

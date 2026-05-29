@@ -1,4 +1,4 @@
-package com.mabu.faceoverlay
+package com.mabu.anima
 
 import android.app.Activity
 import android.graphics.ImageFormat

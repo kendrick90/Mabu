@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Mabu Face Overlay</string>
+    <string name="app_name">Anima</string>
     <string name="permission_denied">Camera permission denied. Grant it in Settings.</string>
 </resources>

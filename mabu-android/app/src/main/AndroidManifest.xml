@@ -4,6 +4,10 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Streaming-mode brain lives on the PC over the LAN (LLM SSE + ASR WS).
+         Previously merged transitively from a dependency; declared explicitly
+         now that RemoteAsr opens its own WebSocket. -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <uses-feature
         android:name="android.hardware.camera.any"
