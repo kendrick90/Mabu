@@ -83,6 +83,33 @@ IDLE/SLEEP; STOP = cancel stream + speech.
 7. **TEMP**: default mode is `SLEEP` (in `onCreate`) while iterating on audio so
    the robot sits still — revert to `Mode.FOLLOW` when done.
 
+## Agentic tool-calling (roadmap, rides on Pipecat)
+
+Goal: ask Mabu to *do* things — "go to sleep", "enter puppet mode", "launch the
+music app", "clone my voice". Mechanism = LLM function/tool calling (Qwen + its
+abliterated variants support it; llama-server exposes the OpenAI tools API).
+**Pipecat has first-class function calling** (`register_function`), which is a
+major reason to migrate — a tool becomes a JSON schema + a handler.
+
+The body/brain split decides where a tool runs:
+- **Body actions** (mode/sleep/puppet, motors, volume, launch app) — the PC LLM
+  emits the call; Pipecat sends it over the **WebRTC data channel**; the Android
+  client executes it. This promotes the existing debug `BroadcastReceiver`
+  (MODE/SLEEP/STOP) into the real PC->device control surface.
+- **Brain actions** (swap model, change persona, lookups) — handler runs on PC.
+- **Guided flows** — e.g. **clone voice**: tool starts a sub-flow; Mabu reads a
+  prompt sentence, the device records ~8 s, uploads to PC as `chatterbox/voice.wav`,
+  Chatterbox hot-reloads the voice, Mabu replies in the cloned voice. (Add a
+  "reload voice" endpoint to `chatterbox_server.py` so no restart is needed.)
+
+Principles: a single tool registry (name->schema->handler, split body/brain);
+confirm outward/irreversible actions; tools express *intent* and the reflex
+layer decides how to animate it (don't add server hops to reflexes).
+
+Phasing: Pipecat Phase 1 (PC pipeline) -> Phase 2 (Android Pipecat client +
+data-channel action dispatcher) -> Phase 3 tools, starting with `set_mode` as
+the proof, then `launch_app`, then the `clone_voice` guided flow.
+
 ## Key files
 
 | File | Purpose |
