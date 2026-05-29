@@ -66,11 +66,33 @@ IDLE/SLEEP; STOP = cancel stream + speech.
 
 ## Next steps / open directions
 
-1. **Turn-taking ("it interrupts me")** — endpointing is a fixed ~800 ms silence
-   debounce, which cuts off mid-thought pauses. Options, cheapest first:
-   bump `SILENCE_MS` / add punctuation+semantic completion heuristics; adopt a
-   turn-detector model; or move PC orchestration to **Pipecat** (LLM-based
-   SmartTurn + automatic barge-in) wrapping our local Whisper/llama/Chatterbox.
+1. **Pipecat migration (DECIDED, in progress)** — the proper fix for
+   "it interrupts me". Move orchestration to **Pipecat** on the PC (Silero VAD +
+   **SmartTurn** semantic turn detection + automatic barge-in). Going **e2e**
+   (no browser-first step); device uses the **official Pipecat Kotlin SDK +
+   SmallWebRTC**. This lets us DELETE the current ASR hacks rather than port them:
+   the 800 ms silence debounce, `consumedEnd` timestamp filtering, the
+   mute-while-speaking echo guard + watchdog, and reconnect plumbing all go away
+   (SmartTurn handles endpointing; **WebRTC AEC** handles echo). The device
+   shrinks to reflexes (camera/motors/overlay) + a thin Pipecat audio client.
+   **Retire**: `RemoteAsr.kt`, `RemoteTts.kt`, `StreamingLlama.kt` (kept in git /
+   local fallback) and the standalone **WhisperLive** server (Pipecat does STT
+   in-process). **Keep**: llama-server (Pipecat LLM points at it) + Chatterbox
+   (custom Pipecat TTS service over HTTP).
+   - **Phase 1 DONE (2026-05-29)**: `pc-brain/pipecat_bot.py` + `setup-pipecat.ps1`
+     + `run-pipecat.ps1`. Brain runs on the PC; **browser-test it at
+     `http://localhost:7860`** (mic → Mabu, with turn-taking + barge-in). WebRTC
+     offer endpoint at `/api/offer`. Gotchas baked in: `PYTHONUTF8=1` (runner
+     emoji banner crashes cp1252 otherwise); correct deps are
+     `pipecat-ai[silero,webrtc,whisper,openai,local-smart-turn]` + `fastapi`
+     `uvicorn` `pipecat-ai-prebuilt` (NOT `-small-webrtc-prebuilt`). SmartTurn =
+     `LocalSmartTurnAnalyzerV3`. `SmallWebRTCConnection.send_app_message` is the
+     PC->device control channel for agentic tools.
+   - **Phase 2 (next)**: Android side. Add the Pipecat Kotlin SDK + SmallWebRTC
+     transport; device streams mic↔speaker to `/api/offer`; needs a firewall
+     allow rule for 7860. Then retire `RemoteAsr.kt`/`RemoteTts.kt`/
+     `StreamingLlama.kt` and the standalone WhisperLive server. Risk: WebRTC SDK
+     on Android 8.1 / ARMv7 / 2 GB.
 2. **Uncensored / idiosyncratic LLM** — trivial swap: point `run-server.ps1` at
    a different GGUF. Candidates: abliterated Qwen 2.5/3 7B (drop-in, same prompt
    format), Dolphin-Llama3, or a 24B (Venice/Dolphin-Mistral) — the 4090 has room.
