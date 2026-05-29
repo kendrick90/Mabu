@@ -1,57 +1,59 @@
-# Handoff — mid-pivot to streaming consciousness
+# Handoff — Anima (Mabu) streaming consciousness
 
-This doc captures where we are mid-task, the architectural direction, and
-the immediate next steps. Read this *before* the rest of the README.
+Read this before the rest of the README. It captures the working state, the
+architecture, and what's next. The app is **Anima** (`com.mabu.anima`).
 
-## What's running right now
+## What works right now (full hands-free conversation)
 
-- **Mabu app on unit 4 (10.0.0.69)** — face tracking, modes, motors,
-  Vosk ASR, on-device llama.cpp + Qwen 2.5 0.5B, Pico TTS all work as a
-  full local loop. ~10–15 s per turn.
-- **llama-server on the PC (10.0.0.49:8080)** — pre-built b9393 CUDA 13.3
-  binaries under `C:\Users\user\Tools\llama-server\`. Serving
-  Qwen 2.5 7B Instruct Q4_K_M from `C:\Users\user\Tools\downloads\`.
-  GPU 0 (RTX 4090); Quadro M6000 hidden via `CUDA_VISIBLE_DEVICES=0`.
-  Start with `run-server.ps1` in that directory.
-- **Mabu side, streaming LLM path** — `StreamingLlama.kt` + OkHttp SSE
-  client + sentence-boundary chunking + per-sentence TTS queue.
-  **VERIFIED end-to-end on unit 4 (2026-05-28).** A spoken (or
-  ADB-injected) turn streams back from Qwen 2.5 7B on the 4090 in
-  ~350–520 ms total, with each sentence spoken as soon as it's parsed.
+A complete streaming loop runs end-to-end, all cognition on the PC brain:
 
-`TuningSettings.cognitionMode` defaults to `"streaming"`; the local
-on-device LLM is still loaded at startup as a fallback. The user can
-flip back to local via that setting (no UI for it yet — set via prefs
-or wire a settings-panel control).
+- **Ears — WhisperLive ASR** (`pc-brain/whisperlive`): always-on, hands-free
+  (no push-to-talk). `RemoteAsr.kt` streams 16 kHz int16 PCM over WebSocket;
+  server VAD segments speech; a silence debounce endpoints each utterance.
+  `large-v3-turbo` on GPU 0. hotword "Mabu". Snappy and reliable.
+- **Mind — llama-server** (`C:\Users\user\Tools\llama-server\`): Qwen 2.5
+  7B Instruct Q4_K_M, SSE streaming. `StreamingLlama.kt` chunks the reply into
+  sentences as they arrive (~100–300 ms first sentence).
+- **Voice — Chatterbox TTS** (`pc-brain/chatterbox`): `RemoteTts.kt` POSTs each
+  sentence to `chatterbox_server.py`, which returns int16 PCM @ 24 kHz; the
+  device pipelines synth + `AudioTrack` playback in order. Drop a `voice.wav`
+  next to the server to clone a custom voice.
+- **Glue**: echo-guard mutes the mic while Mabu speaks (re-opens on playback
+  drain; 90 s watchdog backstop). Live transcript shows in a **speech bubble**
+  by the face when one face is detected. Mute toggle lives in the volume cluster.
 
-## The architectural target (in the user's words)
+`TuningSettings.cognitionMode` defaults to `"streaming"`. In streaming mode the
+on-device LLM (llama.cpp) and Vosk are skipped entirely; they remain the
+`"local"`-mode fallback. Pico TTS is disabled (it SIGSEGVs) except as the
+local-mode voice.
+
+## Architecture (the user's framing)
 
 > personality stack and the body is a vessel
 
-- **Body (Mabu)** — sensorimotor reflexes that have to be local: camera,
-  face detection, attention tracking, motors, gaze, blinks, mic capture,
-  speaker. Stays on-device because of latency.
-- **Brain (PC)** — cognition: LLM, ASR, eventually TTS. Remote because
-  the on-device CPU is too slow / dumb for it. RTX 4090 chews through it
-  in real time.
-- **Two modes**, selectable per session:
-  - `local` — everything on Mabu, no network needed
-  - `streaming` — remote brain over LAN, streaming primary (SSE for LLM,
-    WS for ASR, chunked HTTP / WS for TTS)
+- **Body (Anima on Mabu)** — sensorimotor reflexes that must be local: camera,
+  face detection, attention/gaze, motors, blinks, mic capture, speaker.
+- **Brain (PC, 10.0.0.49)** — cognition over the LAN, streaming-first:
+  ASR (WS), LLM (SSE), TTS (HTTP/PCM). RTX 4090 runs all of it in real time.
 
-WebSocket / SSE are the wire format from day one — don't fall back to
-HTTP request/response if streaming is feasible.
+## PC brain servers
+
+| Server | Dir | Port | Start |
+|---|---|---|---|
+| llama-server (LLM) | `C:\Users\user\Tools\llama-server\` | 8080 | `run-server.ps1` |
+| WhisperLive (ASR)  | `pc-brain/whisperlive` | 9090 | `pc-brain/run-whisperlive.ps1` |
+| Chatterbox (TTS)   | `pc-brain/chatterbox`  | 8123 | `pc-brain/run-chatterbox.ps1` |
+
+Each is GPU 0, M6000 hidden via `CUDA_VISIBLE_DEVICES=0`. Setup scripts:
+`pc-brain/setup-whisperlive.ps1`, `pc-brain/setup-chatterbox.ps1` (each makes a
+gitignored venv). **Firewall**: every new server port needs an inbound allow
+rule (Private profile) or the device connect times out — see the
+`pc-brain-firewall` memory. python313's inbound block rules were disabled.
 
 ## Driving the app over ADB (no buttons)
 
-The app registers a debug `BroadcastReceiver` (in `MainActivity.
-registerDebugReceiver`) so a host can drive it entirely over ADB —
-no touching the screen. **Broadcasts must target the package
-explicitly (`-p com.mabu.anima`)**, otherwise Android 8.0+'s
-implicit-broadcast restriction silently drops them (you'll see
-"Broadcast completed: result=0" but `onReceive` never fires). Quote the
-text for the *device* shell (single quotes inside the `adb shell "…"`
-double quotes) or spaces truncate the extra.
+A debug `BroadcastReceiver` (`MainActivity.registerDebugReceiver`). Broadcasts
+**must** target the package (`-p com.mabu.anima`) or Android 8.0+ drops them.
 
 ```
 adb shell "am broadcast -a com.mabu.anima.SAY   -p com.mabu.anima --es text 'how are you today?'"
@@ -59,123 +61,69 @@ adb shell "am broadcast -a com.mabu.anima.SPEAK -p com.mabu.anima --es text 'hel
 adb shell "am broadcast -a com.mabu.anima.MODE  -p com.mabu.anima --es mode PUPPET"
 adb shell "am broadcast -a com.mabu.anima.STOP  -p com.mabu.anima"
 ```
+SAY = full LLM→TTS path (no mic needed); SPEAK = TTS only; MODE = FOLLOW/PUPPET/
+IDLE/SLEEP; STOP = cancel stream + speech.
 
-- `SAY` — full ASR-equivalent path: LLM → streaming TTS (use this to
-  test the streaming brain without the mic).
-- `SPEAK` — TTS only.
-- `MODE` — FOLLOW / PUPPET / IDLE / SLEEP.
-- `STOP` — cancel in-flight stream + speech.
+## Next steps / open directions
 
-## Immediate next steps (priority order)
+1. **Turn-taking ("it interrupts me")** — endpointing is a fixed ~800 ms silence
+   debounce, which cuts off mid-thought pauses. Options, cheapest first:
+   bump `SILENCE_MS` / add punctuation+semantic completion heuristics; adopt a
+   turn-detector model; or move PC orchestration to **Pipecat** (LLM-based
+   SmartTurn + automatic barge-in) wrapping our local Whisper/llama/Chatterbox.
+2. **Uncensored / idiosyncratic LLM** — trivial swap: point `run-server.ps1` at
+   a different GGUF. Candidates: abliterated Qwen 2.5/3 7B (drop-in, same prompt
+   format), Dolphin-Llama3, or a 24B (Venice/Dolphin-Mistral) — the 4090 has room.
+3. **Custom Mabu voice** — drop a `voice.wav` next to `chatterbox_server.py`.
+4. **Settings-panel UI** for cognitionMode + the three server URLs (currently
+   prefs/defaults: `llmServerUrl`, `asrServerUrl`, `ttsServerUrl`).
+5. **Persona** — sharpen `MABU_PERSONA` (still a bit "how can I help you today?").
+6. **Single orchestrator socket** — collapse the 3 LAN connections into one
+   (Pipecat adoption would do this naturally).
+7. **TEMP**: default mode is `SLEEP` (in `onCreate`) while iterating on audio so
+   the robot sits still — revert to `Mode.FOLLOW` when done.
 
-1. ~~**Verify streaming LLM end-to-end**~~ **DONE (2026-05-28).** Verified
-   via the `SAY` broadcast above; reply streams sentence-by-sentence in
-   ~350–520 ms. Two bugs fixed in the process:
-   - `StreamingLlama` prepended a literal `"null"` to the first sentence
-     — llama-server's first SSE delta is `{"content":null}` and
-     `org.json`'s `optString` returns `"null"` for an explicit JSON null.
-     Fixed with an `isNull("content")` guard.
-   - `AdbShellBridge` (from commit `c4464d1`) referenced an undeclared
-     `A_WRTE` constant — the tree did not compile. Added
-     `A_WRTE = 0x45545257`.
-2. ~~**Skip the local-LLM preload when `cognitionMode == "streaming"`**~~
-   **DONE (2026-05-28).** Guarded in `MainActivity.onCreate`
-   (`preloadLocalLlm = tuning.cognitionMode != "streaming"`); logcat shows
-   `LLM preload skipped (cognitionMode=streaming)`. The mic-ready state no
-   longer requires a local LLM in streaming mode. Flip cognitionMode to
-   `"local"` to restore the preload.
-3. **Whisper server on PC** — build `whisper.cpp` with CUDA, run the
-   `server` example with `ggml-large-v3-turbo` on GPU 0. Test from PC
-   with `curl` and a wav file.
-4. **`RemoteAsr.kt` on Mabu** — `AudioRecord` → PCM frames over
-   WebSocket → server returns partial + final transcripts. Swap into
-   `MainActivity` when in streaming mode; Vosk stays as the local
-   fallback.
-5. **Piper TTS server + `RemoteTts.kt`** — better voice than Pico.
-   Could also do XTTS-v2 for a real "Mabu voice" via voice cloning.
-6. **Settings panel UI for cognition mode + server URL** — currently
-   you'd have to edit `TuningSettings` defaults or push via
-   SharedPreferences manually.
-7. **Eventually**: collapse the three connections into a single
-   orchestrator WebSocket (FastAPI on PC) so Mabu only needs one
-   socket and the server side coordinates the pipeline. Worth doing
-   once we've validated the pieces independently.
-
-## Files to know
+## Key files
 
 | File | Purpose |
 |---|---|
-| `app/src/main/java/com/mabu/anima/StreamingLlama.kt` | Just-added SSE client for `llama-server`. Sentence boundary detection + history. |
-| `app/src/main/java/com/mabu/anima/MainActivity.kt` | `onTranscript` dispatches to `respondStreaming` or `respondLocal` based on `tuning.cognitionMode`. |
-| `app/src/main/java/com/mabu/anima/TuningSettings.kt` | `cognitionMode`, `llmServerUrl` added at the bottom. |
-| `app/src/main/java/com/mabu/anima/TtsHelper.kt` | `speak(text, volume, queueAdd)` — pass `queueAdd=true` for the second+ sentences in a stream so they don't FLUSH each other. |
-| `app/src/main/java/com/mabu/anima/LlamaInference.kt` | On-device fallback. Pinned llama.cpp commit `07eaf919e` (the next commit broke ARMv7 with a fused RMS-norm op). |
-| `app/src/main/java/com/mabu/anima/AsrEngine.kt` | Vosk wrapper. **Do not** call `recognizer.reset()` after `speechService.stop()` — that races and SIGSEGVs Vosk's audio thread on this build. |
-| `setup-llama.ps1` | Re-clones llama.cpp at the pinned commit. |
-| `C:\Users\user\Tools\llama-server\run-server.ps1` | Starts llama-server on the PC. |
+| `app/.../RemoteAsr.kt` | Always-on WhisperLive WS client. VAD endpoint + timestamp-filtered segments (discrete utterances) + reconnect. |
+| `app/.../RemoteTts.kt` | Chatterbox client. Pipelined synth→AudioTrack playback, in order; reports speaking for the echo guard. |
+| `app/.../StreamingLlama.kt` | llama-server SSE client. Sentence chunking + history. Guards org.json `optString` "null". |
+| `app/.../MainActivity.kt` | Dispatch: `onTranscript`→`respondStreaming` (RemoteTts) or `respondLocal` (Pico). Echo-guard mute + watchdog. Debug receiver. |
+| `app/.../TtsHelper.kt` | Pico wrapper (local-mode fallback only). Speaking-state listener + sanitize. |
+| `app/.../AsrEngine.kt` | Vosk (local fallback). Don't `recognizer.reset()` after `stop()` — SIGSEGVs. |
+| `app/.../LlamaInference.kt` | On-device LLM (local fallback). Pinned llama.cpp `07eaf919e`. |
+| `pc-brain/chatterbox_server.py` | FastAPI TTS: POST /tts → int16 PCM @24kHz; optional voice.wav clone. |
 
-## Hardware / setup specifics this code expects
+## Hardware / setup specifics
 
-- **Unit 4** (10.0.0.69) — eyelid scale inverted, EUD inverted,
-  neck-rotation inverted (`NECK_ROT_SIGN = -1`). All in
-  `TuningSettings` defaults. Different unit → re-run calibration via
-  settings panel sign flips and `gazeYOffset` slider.
-- **PC** (10.0.0.49) — RTX 4090 on GPU 0, Quadro M6000 on GPU 1,
-  CUDA 13.0 toolkit + driver 580.97.
-- **Mabu** is RK3288 / ARMv7 / Android 8.1 / 2 GB RAM. On 32-bit ARM,
-  the process VA fragments fast — load big things (LLM model) first.
-- **Pico TTS** ignores `TextToSpeech.Engine.KEY_PARAM_VOLUME`; we set
-  `STREAM_MUSIC` directly. Pico also crashes on emoji / smart quotes /
-  long inputs; `TtsHelper.sanitize` strips those.
-- **No Google Play Services** on Mabu (Esper was wiped). Any feature
-  that depends on GMS won't work.
+- **Unit 4** (10.0.0.69) — eyelid scale inverted, EUD inverted, neck-rotation
+  inverted (`NECK_ROT_SIGN = -1`). All in `TuningSettings`. Other unit → recalibrate.
+- **PC** (10.0.0.49) — RTX 4090 (GPU 0), Quadro M6000 (GPU 1), CUDA 13.0,
+  driver 580.97. Python 3.13. WiFi ADB to the device is stable (drops = robot moved).
+- **Mabu** — RK3288 / ARMv7 / Android 8.1 / 2 GB RAM. 32-bit VA fragments fast.
+- **No Google Play Services** (Esper wiped). GMS-dependent features won't work.
 
 ## Things the user values
 
-- **Streaming over batch**, from the start, in all directions.
-- **Non-standard bot personality** — the LLM should feel idiosyncratic,
-  not corporate-assistant. The system prompt + future fine-tune both
-  matter. Current `MABU_PERSONA` in `MainActivity.companion` is the
-  starting point.
-- **Body / brain split** — the on-device reflex layer is sacred (don't
-  add server hops to it); the cognitive layer is fair game for the LAN.
-- **Per-push explicit approval for `git push`** — the user's global
-  CLAUDE.md requires it. Commits without ask are fine; pushes are not.
+- **Streaming over batch**, every direction.
+- **Hands-free, no push-to-talk** — always listening; mute is optional.
+- **Non-corporate, idiosyncratic personality** — open to uncensored/abliterated
+  models and a cloned voice.
+- **Body / brain split** — the on-device reflex layer is sacred; cognition on the LAN.
+- **Per-push explicit approval for `git push`** (global CLAUDE.md). Commits are fine.
 
 ## Don't break
 
-- The motor sign flips in `TuningSettings` are physical install
-  calibration. **"Reset tuning"** preserves them; **"Reset all"** wipes
-  them. Don't change which bucket they live in.
-- The `gazeYOffset` is applied universally in the gaze tick (not in
-  any source-specific path). Keep it there.
-- `mabu-app/` (Python prototype) is deprecated but kept as a reference;
-  don't delete unless the user asks.
-- The on-device llama.cpp is pinned to `07eaf919e` via `setup-llama.ps1`.
-  Master will fault on ARMv7 with `GGML_RMS_NORM_FUSE_OP_MUL`. If the
-  user wants a newer version, they need a commit that either pre-dates
-  the fusion or has an ARMv7 fix landed.
-
-## Recent upstream additions you may not have seen
-
-Commit `c4464d1` (in origin/main, possibly from a parallel session) added
-**`AdbShellBridge`** as a fallback for motor port access: if `SerialPort.
-openTty("/dev/ttyS1")` returns a permission error (SELinux blocking
-`untrusted_app` from `serial_device`), `MabuMotors` retries via the local
-adbd socket, which runs in a context that *can* touch the tty. There's
-also a `selinux/` directory at the repo root with the permanent policy
-patch. Read those before assuming serial just works on a fresh unit.
-
-`MabuMotors` also gained a `sleepPose()` (eyelids closed, neck slightly
-down) that the SLEEP mode can use; not yet wired up.
-
-## Open questions
-
-- **Best Whisper variant for the 4090?** I suggested `large-v3-turbo`
-  (smaller, ~6x faster than large-v3, similar quality). User has not
-  weighed in yet.
-- **TTS upgrade path** — Piper for "just sound better" vs XTTS-v2 for
-  voice cloning a real Mabu voice. User's choice.
-- **Single orchestrator vs three connections** — I suggested doing the
-  three-connection version first to validate each piece, then collapsing
-  to one orchestrator socket. User hasn't pushed back on that order.
+- Motor sign flips in `TuningSettings` are physical install calibration.
+  "Reset tuning" preserves them; "Reset all" wipes them. Keep that split.
+- `gazeYOffset` is applied universally in the gaze tick. Keep it there.
+- The package rename couples to JNI: native symbols are `Java_com_mabu_anima_*`
+  in `cpp/serial.c` + `cpp/llama_jni.cpp`. Renaming the package again means
+  renaming those too (else `UnsatisfiedLinkError` on motor/LLM native calls).
+- `mabu-app/` (Python prototype) deprecated; keep unless asked.
+- On-device llama.cpp pinned to `07eaf919e` (`setup-llama.ps1`); master faults on
+  ARMv7 (`GGML_RMS_NORM_FUSE_OP_MUL`).
+- `AdbShellBridge` is the motor-port fallback when SELinux blocks `/dev/ttyS1`;
+  see the repo-root `selinux/` policy. `MabuMotors.sleepPose()` exists (not wired).
