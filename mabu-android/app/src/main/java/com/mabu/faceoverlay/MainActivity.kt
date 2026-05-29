@@ -349,7 +349,45 @@ class MainActivity : AppCompatActivity() {
                 maybeMirrorEyelids(result)
             }
         }
-        cameraSource = Camera1Source(this, textureView, analyzer)
+        cameraSource = Camera1Source(this, textureView, analyzer) { pw, ph, rot ->
+            adjustPreviewAspect(pw, ph, rot)
+        }
+    }
+
+    /**
+     * Size the TextureView (and the overlay sitting on top of it) to the
+     * camera preview's aspect ratio, centered with black bars on whichever
+     * sides don't fit. Without this, MATCH_PARENT non-uniformly stretches
+     * 320x240 to 1024x600 -- the face looks wide and landmarks miss because
+     * the overlay's scale math assumes uniform fill-center.
+     */
+    private fun adjustPreviewAspect(previewW: Int, previewH: Int, imageRotation: Int) {
+        // After rotation, the displayed image dimensions may swap.
+        val effW = if (imageRotation == 90 || imageRotation == 270) previewH else previewW
+        val effH = if (imageRotation == 90 || imageRotation == 270) previewW else previewH
+        val parent = rootLayout
+        val parentW = parent.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val parentH = parent.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val previewAspect = effW.toFloat() / effH
+        val parentAspect = parentW.toFloat() / parentH
+        val (w, h) = if (previewAspect > parentAspect) {
+            // preview wider than parent -> letterbox top/bottom
+            parentW to (parentW / previewAspect).toInt()
+        } else {
+            // preview narrower -> pillarbox sides
+            (parentH * previewAspect).toInt() to parentH
+        }
+        val applyTo: (android.view.View) -> Unit = { v ->
+            val lp = v.layoutParams as FrameLayout.LayoutParams
+            lp.width = w
+            lp.height = h
+            lp.gravity = Gravity.CENTER
+            v.layoutParams = lp
+        }
+        applyTo(textureView)
+        applyTo(overlayView)
+        Log.i(TAG, "preview aspect: ${effW}x$effH (${"%.3f".format(previewAspect)}) " +
+            "-> view ${w}x$h in ${parentW}x$parentH parent")
     }
 
     // ---------- FOLLOW mode ----------------------------------------------------

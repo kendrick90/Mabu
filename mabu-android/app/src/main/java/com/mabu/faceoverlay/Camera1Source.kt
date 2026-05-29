@@ -25,7 +25,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 class Camera1Source(
     private val activity: Activity,
     private val textureView: TextureView,
-    private val analyzer: FaceAnalyzer
+    private val analyzer: FaceAnalyzer,
+    /** Called on the main thread once the preview size + image rotation
+     *  are known, so the host can resize the preview / overlay to match
+     *  the camera's aspect ratio and avoid non-uniform stretch. */
+    private val onPreviewSizeKnown: (previewW: Int, previewH: Int, imageRotation: Int) -> Unit = { _, _, _ -> }
 ) : TextureView.SurfaceTextureListener {
 
     private var camera: Camera? = null
@@ -130,6 +134,9 @@ class Camera1Source(
                 "sensorOrient=${cameraInfo.orientation} display=$displayOrientation " +
                 "imageRot=$imageRotation"
         )
+        activity.runOnUiThread {
+            onPreviewSizeKnown(previewWidth, previewHeight, imageRotation)
+        }
     }
 
     private fun onFrame(data: ByteArray?, cam: Camera) {
