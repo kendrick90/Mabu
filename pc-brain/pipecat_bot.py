@@ -41,6 +41,7 @@ from pipecat.transports.base_transport import TransportParams
 from whisperlive_stt import WhisperLiveSTTService
 from persona_manager import PersonaManager
 from persona_control import PersonaControl, VoiceState
+import control_server
 
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://localhost:8080/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5-7b-instruct")
@@ -176,8 +177,16 @@ async def run_pipeline(transport):
     )
     persona_ctl = PersonaControl(
         personas, LLAMA_URL, chatterbox_url=CHATTERBOX_URL,
-        stop_tokens=["<|im_end|>"], voice_state=voice_state,
+        stop_tokens=["<|im_end|>"], voice_state=voice_state, context=context,
     )
+
+    # Programmatic control + status API (see/switch personas & voices without
+    # voice). Points at this live PersonaControl; started once across reconnects.
+    control_server.CTRL.update(
+        persona_ctl=persona_ctl, manager=personas,
+        voices_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "voices"),
+    )
+    control_server.start_control_server(port=int(os.environ.get("CONTROL_PORT", "7861")))
 
     pipeline = Pipeline([
         transport.input(),

@@ -18,6 +18,7 @@ Switching swaps the live LLM context: system prompt := persona.prompt, history
 first, so each character remembers its own history across switches.
 """
 import io
+import queue
 import re
 import wave
 
@@ -60,7 +61,7 @@ class VoiceState:
 
 class PersonaControl(FrameProcessor):
     def __init__(self, manager, llama_url: str, chatterbox_url: str = "",
-                 stop_tokens=None, voice_state=None, **kwargs):
+                 stop_tokens=None, voice_state=None, context=None, **kwargs):
         super().__init__(**kwargs)
         self._mgr = manager
         self._llama_url = llama_url.rstrip("/")
@@ -69,6 +70,53 @@ class PersonaControl(FrameProcessor):
         self._voice = voice_state  # VoiceState, shared with the TTS service
         self._mode = "normal"  # "normal" | "workshop"
         self._prev_persona = None  # to restore on workshop cancel
+        # Live LLM context (same object the aggregators hold). Kept fresh from
+        # frames; lets programmatic (API) commands mutate the running session.
+        self._ctx = context
+        # Commands submitted from the control-API thread, drained on the pipeline
+        # loop in process_frame (thread-safe hand-off, no cross-thread mutation).
+        self._cmds = queue.Queue()
+
+    def submit_command(self, cmd: dict):
+        """Thread-safe: enqueue a control command (from the HTTP API thread)."""
+        self._cmds.put(cmd)
+
+    def status(self) -> dict:
+        active = self._mgr.active()
+        return {
+            "active": (active or {}).get("name"),
+            "voice": getattr(self._voice, "name", None) if self._voice else None,
+            "mode": self._mode,
+            "personas": self._mgr.display_names(),
+        }
+
+    async def _drain_commands(self):
+        while True:
+            try:
+                cmd = self._cmds.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                await self._apply_command(cmd)
+            except Exception as e:
+                logger.warning(f"[persona] command {cmd} failed: {e}")
+
+    async def _apply_command(self, cmd: dict):
+        if self._ctx is None:
+            return
+        action = cmd.get("action")
+        if action == "switch":
+            target = self._mgr.find(cmd.get("name", ""))
+            if target:
+                await self._switch(self._ctx, target, drop=False)
+        elif action == "voice":
+            await self._assign_voice(self._ctx, cmd.get("name", ""), drop=False)
+        elif action == "create":
+            name, prompt = cmd.get("name"), cmd.get("prompt")
+            if name and prompt:
+                self._mgr.create(name, prompt)
+                if cmd.get("activate"):
+                    await self._switch(self._ctx, self._mgr.slug(name), drop=False)
         # Voice-clone capture state.
         self._capturing = False
         self._clip = bytearray()
@@ -84,6 +132,11 @@ class PersonaControl(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
+        # Apply any queued programmatic commands on the pipeline loop. Audio
+        # frames flow continuously over WebRTC, so this drains within ~ms.
+        if not self._cmds.empty():
+            await self._drain_commands()
+
         # Voice-clone capture: buffer mic audio while still passing it through.
         if self._capturing and isinstance(frame, InputAudioRawFrame):
             await self.push_frame(frame, direction)
@@ -93,6 +146,7 @@ class PersonaControl(FrameProcessor):
             return
 
         if isinstance(frame, LLMContextFrame):
+            self._ctx = frame.context  # keep the live context fresh for API cmds
             if self._capturing:
                 # Ignore spoken turns while capturing -- don't let the LLM reply
                 # to "say a sentence" speech.
@@ -197,8 +251,9 @@ class PersonaControl(FrameProcessor):
         return False
 
     # --- actions ----------------------------------------------------------
-    async def _switch(self, ctx, target_slug):
-        self._drop_command(ctx)
+    async def _switch(self, ctx, target_slug, drop=True):
+        if drop:
+            self._drop_command(ctx)
         self._save_active_memory(ctx)        # remember outgoing persona's history
         persona = self._mgr.get(target_slug)
         self._mgr.set_active(target_slug)
@@ -336,8 +391,9 @@ class PersonaControl(FrameProcessor):
             logger.warning(f"[persona] clone upload failed: {e}")
             return None
 
-    async def _assign_voice(self, ctx, voice_name):
-        self._drop_command(ctx)
+    async def _assign_voice(self, ctx, voice_name, drop=True):
+        if drop:
+            self._drop_command(ctx)
         slug = self._mgr.slug(voice_name)
         active = self._mgr.active_name()
         p = self._mgr.get(active)
