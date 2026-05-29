@@ -88,7 +88,7 @@ class MabuMotors {
             ldl = EYELID_NEUTRAL, ldr = EYELID_NEUTRAL,
             elr = 50.0, eud = 50.0,
             ne  = NE_NEUTRAL,
-            nr  = 50.0, nt  = 50.0
+            nr  = NR_NEUTRAL, nt = NT_NEUTRAL
         )
     }
 
@@ -179,10 +179,13 @@ class MabuMotors {
         const val NR  = 0x02  // neck rotation
         const val NT  = 0x01  // neck tilt
 
-        // Neutral positions — NOT all 50. Community reverse-engineering shows NE's mechanical
-        // center is ~25 (sending 50 pushes it to a hard stop). Eyelids at 25 = mostly open.
-        // These may need per-unit tuning. Source: electronick-co/hacking_mabu2.
-        const val NE_NEUTRAL = 25.0
+        // Neutral positions — NOT all 50. Per-unit calibration required.
+        // NE: community docs say ~25; confirmed on this unit.
+        // NR: 50 causes left twist on this unit — tuning in progress.
+        // NT: 50 causes right tilt on this unit — tuning in progress.
+        const val NE_NEUTRAL     = 25.0
+        const val NR_NEUTRAL     = 40.0  // tune: lower fixes left twist
+        const val NT_NEUTRAL     = 45.0  // tune: lower fixes right tilt (unconfirmed direction)
         const val EYELID_NEUTRAL = 25.0
     }
 }

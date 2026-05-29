@@ -15,6 +15,7 @@ import com.google.mlkit.vision.face.FaceDetectorOptions
 import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sqrt
 
 class MainActivity : AppCompatActivity() {
 
@@ -25,16 +26,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var detector: FaceDetector
     private val motorExecutor = Executors.newSingleThreadExecutor()
 
-    // Soft limits: eyes do most of the work in this range; outside it we
-    // start moving the neck. Keeps Mabu looking natural rather than
-    // jittering the neck on every micro-movement.
-    private val EYE_SOFT_MIN = 15.0
-    private val EYE_SOFT_MAX = 85.0
+    // Soft limits: eyes do most of the work in this range.
+    // LR and UD are separate because EUD is inverted + the large Y_OFFSET
+    // biases the resting position well below 50, leaving very little upward
+    // headroom if EYE_UD_MIN is too conservative.
+    private val EYE_LR_MIN = 15.0
+    private val EYE_LR_MAX = 85.0
+    private val EYE_UD_MIN =  5.0   // lower = eyes look UP on this unit; physical stop unknown, tune if grinding
+    private val EYE_UD_MAX = 85.0
     private val NECK_MIN = 20.0
     private val NECK_MAX = 80.0
-    private val NECK_CENTER = 50.0
+    private val NECK_CENTER = MabuMotors.NR_NEUTRAL
     private val EYE_CENTER = 50.0
-    private val SMOOTH = 0.15
+    private val SMOOTH    = 0.12  // lower = slower, smoother following
+    private val DEADBAND  = 1.5   // motor units; corrections smaller than this are ignored
 
     // NE (neck elevation = up/down) has a different mechanical center than 50.
     // Community calibration: NE neutral ~25. Hard limits kept conservative.
@@ -42,11 +47,11 @@ class MainActivity : AppCompatActivity() {
     private val NE_MIN = 18.0   // physical lower stop for this unit
     private val NE_MAX = 100.0  // true ceiling — wire() clamps at 255 = logical 100
 
-    // Neck always follows face at this gain (reference neckFollowGain=0.4).
-    // NR range: xNorm ±1 → posNR ±NECK_FOLLOW_RANGE from center.
-    // NE gain maps ±0.5 ay → full upward travel of 15 units.
-    private val NECK_FOLLOW_RANGE = 20.0
-    private val NE_FOLLOW_RANGE   = 68.0
+    // Eye/neck coordination thresholds.
+    // Eyes lead; neck joins at 60%, eyes fully unlock when neck hits 80% or eye hits 90%.
+    private val EYE_NECK_TRIGGER = 0.60   // eye at 60% of range → neck starts
+    private val NECK_FULL_UNLOCK = 0.80   // neck at 80% of range → eye unlocks to 100%
+    private val EYE_FULL_UNLOCK  = 0.90   // eye at 90% → both unlock to 100%
 
     // Calibration offsets — tune these to compensate for camera mounting angle.
     // Positive Y_OFFSET shifts tracking center down (face appears high in frame);
@@ -54,6 +59,10 @@ class MainActivity : AppCompatActivity() {
     // X_OFFSET works the same horizontally.
     private val Y_OFFSET = -0.70  // pixel center correction + upward camera tilt compensation
     private val X_OFFSET = 0.0
+    // Face center xNorm tops out around ±0.7 in practice (never at the literal pixel edge).
+    // This gain maps that practical range to the full ±1.0 effort, using the full eye range.
+    // Clamped to ±1.0 after scaling so it can't overshoot the motor limits.
+    private val ELR_GAIN = 1.4
 
     private var posELR = EYE_CENTER
     private var posEUD = EYE_CENTER
@@ -133,23 +142,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateAndSendMotors(xNorm: Double, yNorm: Double) {
-        val ax = xNorm + X_OFFSET
+        val ax = clamp((xNorm + X_OFFSET) * ELR_GAIN, -1.0, 1.0)
         val ay = yNorm + Y_OFFSET
 
-        // Eyes: track face directly, clamped to soft limits.
-        val eyeLR = clamp(EYE_CENTER + ax * (EYE_SOFT_MAX - EYE_CENTER), EYE_SOFT_MIN, EYE_SOFT_MAX)
-        val eyeUD = clamp(EYE_CENTER + ay * (EYE_SOFT_MAX - EYE_CENTER), EYE_SOFT_MIN, EYE_SOFT_MAX)
+        // 2D magnitude: used to share the unlock condition across axes.
+        // Prevents the case where one axis is at its extreme (fully unlocked) while
+        // the other axis is still in zone 1 and capped at 60% range.
+        val mag2D = sqrt(ax * ax + ay * ay)
 
-        // Neck: always follows face proportionally every frame (reference neckFollowGain=0.4).
-        // NR: face right (ax>0) → NR decreases (reference neckRotSign = -1).
-        // NE: face up (ay<0) → NE increases above neutral (NE not inverted on this unit).
-        val targetNR = clamp(NECK_CENTER - ax * NECK_FOLLOW_RANGE, NECK_MIN, NECK_MAX)
-        val targetNE = clamp(MabuMotors.NE_NEUTRAL - ay * NE_FOLLOW_RANGE, NE_MIN, NE_MAX)
+        // LR axis: face right → ELR up, NR down (neckSign = -1)
+        val (targetELR, targetNR) = computeEyeNeckAxis(
+            ax, EYE_CENTER, EYE_LR_MIN, EYE_LR_MAX,
+            NECK_CENTER, NECK_MIN, NECK_MAX, neckSign = -1.0, mag2D = mag2D
+        )
+        // UD axis: face up (ay<0) → EUD down (inverted, lower=up), NE up (neckSign = -1)
+        val (targetEUD, targetNE) = computeEyeNeckAxis(
+            ay, EYE_CENTER, EYE_UD_MIN, EYE_UD_MAX,
+            MabuMotors.NE_NEUTRAL, NE_MIN, NE_MAX, neckSign = -1.0, mag2D = mag2D
+        )
 
-        posELR += (eyeLR - posELR) * SMOOTH
-        posEUD += (eyeUD - posEUD) * SMOOTH
-        posNR  += (targetNR - posNR) * SMOOTH
-        posNE  += (targetNE - posNE) * SMOOTH
+        posELR += deadbandSmooth(posELR, targetELR)
+        posEUD += deadbandSmooth(posEUD, targetEUD)
+        posNR  += deadbandSmooth(posNR,  targetNR)
+        posNE  += deadbandSmooth(posNE,  targetNE)
 
         val now = System.currentTimeMillis()
         if (now - lastSendMs >= SEND_INTERVAL_MS && motors.isOpen()) {
@@ -160,10 +175,70 @@ class MainActivity : AppCompatActivity() {
                 eud = posEUD,
                 ne  = posNE,
                 nr  = posNR,
-                nt  = 50.0
+                nt  = MabuMotors.NT_NEUTRAL
             )
             lastSendMs = now
         }
+    }
+
+    /**
+     * Computes eye and neck targets for one axis using a three-zone model:
+     *   Zone 1 (effort 0–60%): eyes track alone, neck stays at neutral.
+     *   Zone 2 (60–90%): neck ramps in; eye cap rises from 60% → 100% proportional to neck.
+     *   Unlock: neck >= 80% of range OR eye effort >= 90% → both use 100% of range.
+     *
+     * neckSign = +1 if neck moves same direction as eye, -1 if opposite.
+     * mag2D = combined 2D face magnitude; if it crosses EYE_FULL_UNLOCK, both axes unlock
+     *         regardless of their individual effort. Keeps axes independent in movement
+     *         while sharing the global "far from center" unlock signal.
+     */
+    private fun computeEyeNeckAxis(
+        effort: Double,
+        eyeCenter: Double, eyeMin: Double, eyeMax: Double,
+        neckNeutral: Double, neckMin: Double, neckMax: Double,
+        neckSign: Double,
+        mag2D: Double = 0.0
+    ): Pair<Double, Double> {
+        val sign    = if (effort >= 0.0) 1.0 else -1.0
+        val mag     = kotlin.math.abs(effort)
+        val neckDir = sign * neckSign
+
+        // Max displacement from neutral toward the active pole
+        val eyeMaxDisp  = if (effort >= 0.0) eyeMax - eyeCenter else eyeCenter - eyeMin
+        val neckMaxDisp = if (neckDir > 0.0) neckMax - neckNeutral else neckNeutral - neckMin
+
+        // Neck: zero until per-axis trigger, then linearly ramps to 100% of its range.
+        // Neck trigger is intentionally per-axis — neck should only engage in a direction
+        // when the face is actually displaced in that direction.
+        val neckFrac = if (mag < EYE_NECK_TRIGGER) 0.0
+                       else minOf((mag - EYE_NECK_TRIGGER) / (1.0 - EYE_NECK_TRIGGER), 1.0)
+
+        // Eye unlock: per-axis thresholds OR combined 2D magnitude exceeds the full-unlock
+        // threshold. The 2D check prevents one axis from being capped at 60% while the other
+        // is fully unlocked (e.g. face at top of frame → UD unlocked, LR should also unlock).
+        val eyeClampFrac = when {
+            mag >= EYE_FULL_UNLOCK || mag2D >= EYE_FULL_UNLOCK -> 1.0
+            neckFrac >= NECK_FULL_UNLOCK                        -> 1.0
+            mag < EYE_NECK_TRIGGER                              -> EYE_NECK_TRIGGER
+            else -> EYE_NECK_TRIGGER + (neckFrac / NECK_FULL_UNLOCK) * (1.0 - EYE_NECK_TRIGGER)
+        }
+
+        val eyeDisp  = minOf(mag * eyeMaxDisp, eyeMaxDisp * eyeClampFrac)
+        val neckDisp = neckFrac * neckMaxDisp
+
+        return Pair(
+            clamp(eyeCenter + sign    * eyeDisp,  eyeMin,  eyeMax),
+            clamp(neckNeutral + neckDir * neckDisp, neckMin, neckMax)
+        )
+    }
+
+    // Skip corrections smaller than DEADBAND to suppress face-detection noise.
+    // Full SMOOTH gain is applied once the threshold is crossed — the soft version
+    // was subtracting DEADBAND from every correction, killing range on large moves too.
+    private fun deadbandSmooth(current: Double, target: Double): Double {
+        val error = target - current
+        if (kotlin.math.abs(error) < DEADBAND) return 0.0
+        return error * SMOOTH
     }
 
     private fun clamp(v: Double, lo: Double, hi: Double) = max(lo, min(hi, v))
