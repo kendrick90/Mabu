@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     private var asr: AsrEngine? = null
     private var remoteAsr: RemoteAsr? = null
     private lateinit var micButton: TextView
+    private var muteButton: TextView? = null
 
     // Safety net: if TTS never reports "done" (e.g. Pico SIGSEGVs mid-speech),
     // the echo-guard mute would stick and Mabu would go deaf. This re-opens the
@@ -44,7 +45,7 @@ class MainActivity : AppCompatActivity() {
     private val safetyUnmute = Runnable {
         Log.w(TAG, "TTS watchdog fired: re-opening mic (TTS likely crashed mid-speech)")
         remoteAsr?.muted = false
-        if (tuning.cognitionMode == "streaming") micButton.text = "🎤 listening… (tap=mute)"
+        if (tuning.cognitionMode == "streaming") micButton.text = "🎤 listening…"
     }
     private var streamingLlm: StreamingLlama? = null
 
@@ -253,7 +254,7 @@ class MainActivity : AppCompatActivity() {
                 handler.post {
                     if (!speaking) {
                         handler.removeCallbacks(safetyUnmute)   // normal finish
-                        micButton.text = "🎤 listening… (tap=mute)"
+                        micButton.text = "🎤 listening…"
                         overlayView.setHeardText(null)          // clear the bubble
                     }
                 }
@@ -261,7 +262,7 @@ class MainActivity : AppCompatActivity() {
             remoteAsr?.start()      // always-on listening, no button
             Log.i(TAG, "streaming mode: RemoteAsr -> ${tuning.asrServerUrl}; " +
                 "local LLM + Vosk skipped; always-on listening")
-            micButton.text = "🎤 listening… (tap=mute)"
+            micButton.text = "🎤 listening…"
         } else {
             // Local mode. Load LLM FIRST, then Vosk. The Qwen GGUF needs
             // ~470 MB of contiguous virtual address space and we're on 32-bit
@@ -298,15 +299,11 @@ class MainActivity : AppCompatActivity() {
     // ---------- Push-to-talk → ASR → LLM → TTS --------------------------------
 
     private fun onMicDown() {
-        // Streaming mode is hands-free (always-on RemoteAsr): the button is no
-        // longer push-to-talk, just a manual mute/unmute toggle. A tap fires
-        // DOWN; we toggle on DOWN and ignore UP.
+        // Streaming mode is hands-free (always-on RemoteAsr). Mute now lives in
+        // the volume cluster; the bottom button is a status line that also
+        // toggles mute on tap (routed through the same toggleMute()).
         if (tuning.cognitionMode == "streaming") {
-            val r = remoteAsr ?: return
-            val nowMuted = !r.muted
-            r.muted = nowMuted
-            if (nowMuted) { try { tts.stop() } catch (_: Throwable) {}; overlayView.setHeardText(null) }
-            micButton.text = if (nowMuted) "🔇 muted (tap=listen)" else "🎤 listening… (tap=mute)"
+            toggleMute()
             return
         }
         // Local mode: classic push-to-talk. Mute TTS first; AudioRecord
@@ -331,15 +328,16 @@ class MainActivity : AppCompatActivity() {
         Log.i(TAG, "user: $text")
         when (tuning.cognitionMode) {
             "streaming" -> {
-                // Mute the mic for the thinking + speaking window so we don't
-                // transcribe Mabu's own reply. TTS speaking keeps it muted;
-                // the mic re-opens when TTS fully drains (onSpeakingChanged).
-                remoteAsr?.muted = true
-                micButton.text = "🎤 thinking…"
                 overlayView.setHeardText(text)   // keep the heard words on screen
-                // Arm the watchdog in case TTS dies before reporting done.
-                handler.removeCallbacks(safetyUnmute)
-                handler.postDelayed(safetyUnmute, SPEAK_WATCHDOG_MS)
+                // Only gate the mic if we'll actually speak. With Pico disabled
+                // (it SIGSEGVs on this device) there's no voice to echo, so we
+                // stay listening continuously instead of wedging on "thinking".
+                if (USE_PICO_TTS) {
+                    remoteAsr?.muted = true
+                    micButton.text = "🎤 thinking…"
+                    handler.removeCallbacks(safetyUnmute)
+                    handler.postDelayed(safetyUnmute, SPEAK_WATCHDOG_MS)
+                }
                 respondStreaming(text)
             }
             else -> {
@@ -362,7 +360,10 @@ class MainActivity : AppCompatActivity() {
                 val dt = System.currentTimeMillis() - t0
                 Log.i(TAG, "mabu sentence (+${dt}ms, first=$isFirst): $sentence")
                 spokeAnything = true
-                handler.post { tts.speak(sentence, queueAdd = !isFirst) }
+                // Pico disabled (deterministic SIGSEGV); RemoteTts/CosyVoice
+                // will replace it. Until then, reply text is logged + shown in
+                // the bubble but not spoken, so the loop never wedges.
+                if (USE_PICO_TTS) handler.post { tts.speak(sentence, queueAdd = !isFirst) }
             }
             override fun onDone(fullText: String) {
                 Log.i(TAG, "mabu done in ${System.currentTimeMillis() - t0}ms")
@@ -901,10 +902,34 @@ class MainActivity : AppCompatActivity() {
             setPadding(20, 4, 20, 4)
             setOnClickListener { adjustVolume(-1) }
         }
+        // Mute toggle lives here with the volume controls (not the bottom
+        // status button). Tap to stop/resume listening.
+        val mute = TextView(this).apply {
+            text = "🎤"; textSize = 24f
+            setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(20, 10, 20, 6)
+            setOnClickListener { toggleMute() }
+        }
+        muteButton = mute
+        panel.addView(mute)
         panel.addView(plus)
         panel.addView(volLevelView)
         panel.addView(minus)
         return panel
+    }
+
+    /** Toggle the always-on mic (streaming mode). */
+    private fun toggleMute() {
+        val r = remoteAsr ?: return
+        val nowMuted = !r.muted
+        r.muted = nowMuted
+        if (nowMuted) { try { tts.stop() } catch (_: Throwable) {}; overlayView.setHeardText(null) }
+        updateMuteUi(nowMuted)
+    }
+
+    private fun updateMuteUi(muted: Boolean) {
+        muteButton?.text = if (muted) "🔇" else "🎤"
+        micButton.text = if (muted) "muted" else "🎤 listening…"
     }
 
     private fun adjustVolume(delta: Int) {
@@ -1020,6 +1045,12 @@ class MainActivity : AppCompatActivity() {
         // (e.g. Pico crashed), the watchdog re-opens the mic so Mabu can hear
         // again. Generous so it never clips a normal multi-sentence reply.
         private const val SPEAK_WATCHDOG_MS = 20000L
+
+        // Pico TTS SIGSEGVs deterministically on this device (see
+        // pico-tts-unreliable). Disabled until RemoteTts (CosyVoice on the PC)
+        // lands -- replies are shown in the bubble but not spoken, so the
+        // always-on listen loop never wedges on a TTS crash.
+        private const val USE_PICO_TTS = false
 
         private const val ASR_MODEL_PATH = "/sdcard/vosk-model-en"
         private const val MABU_PERSONA =

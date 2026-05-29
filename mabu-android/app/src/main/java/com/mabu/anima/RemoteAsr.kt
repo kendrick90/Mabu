@@ -82,6 +82,13 @@ class RemoteAsr(
     private var partial = ""
     @Volatile private var utteranceActive = false
     @Volatile private var lastActivityMs = 0L
+    // WhisperLive keeps a rolling per-connection transcript and resends its
+    // last-N segments every message. To get discrete utterances we ignore any
+    // segment that ends at/before [consumedEnd] (seconds since connect) -- the
+    // point up to which we've already emitted. [maxEndSeen] tracks the newest
+    // segment end so the endpoint can advance consumedEnd past this utterance.
+    @Volatile private var consumedEnd = 0.0
+    @Volatile private var maxEndSeen = 0.0
 
     /** Begin always-on listening (idempotent). */
     fun start() {
@@ -148,10 +155,12 @@ class RemoteAsr(
                 Log.i(TAG, "recording @ ${SAMPLE_RATE}Hz int16 mono (continuous)")
                 while (running) {
                     val n = recorder.read(buf, 0, buf.size)
-                    // Keep draining the mic even when muted; just don't send,
-                    // so Mabu's own TTS never reaches the transcriber.
+                    // Send to the CURRENT socket (the field, not a captured ref)
+                    // so this single long-lived thread keeps working across
+                    // reconnects. Keep draining the mic even when muted; just
+                    // don't send, so Mabu's own TTS never reaches the transcriber.
                     if (n > 0 && !muted && serverReady) {
-                        ws.send(buf.copyOf(n).toByteString())
+                        webSocket?.send(buf.copyOf(n).toByteString())
                     }
                 }
             } catch (e: Throwable) {
@@ -173,6 +182,9 @@ class RemoteAsr(
                 val quietFor = System.currentTimeMillis() - lastActivityMs
                 if (quietFor >= SILENCE_MS) {
                     val text = currentText()
+                    // Everything up to the newest segment is now consumed, so
+                    // the next utterance starts fresh.
+                    consumedEnd = maxEndSeen
                     resetUtterance()
                     if (text.isNotEmpty()) {
                         Log.i(TAG, "endpoint (${quietFor}ms quiet) -> final: $text")
@@ -214,6 +226,8 @@ class RemoteAsr(
                     Log.i(TAG, "status: ${msg.optString("status")} ${msg.optString("message")}")
                 msg.optString("message") == "SERVER_READY" -> {
                     serverReady = true
+                    // Fresh server session: its segment timestamps restart at 0.
+                    consumedEnd = 0.0; maxEndSeen = 0.0
                     Log.i(TAG, "SERVER_READY (backend=${msg.optString("backend")})")
                     if (running) startCapture(ws)
                 }
@@ -232,34 +246,61 @@ class RemoteAsr(
             try { ws.close(1000, null) } catch (_: Throwable) {}
         }
 
+        // A clean server-initiated close (e.g. WhisperLive's max_connection_time
+        // overtime) lands here, NOT onFailure -- reconnect from both.
+        override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+            scheduleReconnect("closed code=$code")
+        }
+
         override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
             Log.e(TAG, "WS failure (code=${response?.code}): ${t.message}", t)
-            serverReady = false
-            // Auto-reconnect while we're meant to be listening (e.g. server
-            // restart, transient LAN blip). Backoff a beat first.
-            if (running) {
-                try { Thread.sleep(RECONNECT_DELAY_MS) } catch (_: InterruptedException) {}
-                if (running) {
-                    Log.i(TAG, "reconnecting...")
-                    webSocket = client.newWebSocket(
-                        Request.Builder().url("$baseWsUrl/").build(), SocketListener()
-                    )
-                }
-            }
+            scheduleReconnect("failure: ${t.message}")
         }
     }
 
-    /** Merge a segments array into [completed] + [partial]; bump activity. */
+    /**
+     * Reopen the socket while we're still meant to be listening. Deduped so a
+     * failure+close pair doesn't spawn two reconnects. The persistent record
+     * thread automatically streams to the new socket (it reads the webSocket
+     * field), so we don't touch capture here.
+     */
+    @Volatile private var reconnecting = false
+    private fun scheduleReconnect(reason: String) {
+        if (!running || reconnecting) return
+        reconnecting = true
+        serverReady = false
+        Thread {
+            try { Thread.sleep(RECONNECT_DELAY_MS) } catch (_: InterruptedException) {}
+            if (running) {
+                Log.i(TAG, "reconnecting ($reason)")
+                webSocket = client.newWebSocket(
+                    Request.Builder().url("$baseWsUrl/").build(), SocketListener()
+                )
+            }
+            reconnecting = false
+        }.apply { isDaemon = true; start() }
+    }
+
+    /**
+     * Rebuild [completed]/[partial] from the server's current segment list,
+     * keeping only segments newer than [consumedEnd] (i.e. this utterance). We
+     * REPLACE rather than accumulate, since the server resends an authoritative
+     * rolling list each message -- accumulating would duplicate text.
+     */
     private fun handleSegments(segs: JSONArray) {
         val before = currentText()
         synchronized(lock) {
+            completed.clear()
             partial = ""
             for (i in 0 until segs.length()) {
                 val s = segs.optJSONObject(i) ?: continue
                 val t = s.optString("text").trim()
                 if (t.isEmpty()) continue
+                val end = s.optDouble("end", 0.0)
+                if (end > maxEndSeen) maxEndSeen = end
+                if (end <= consumedEnd) continue   // already emitted in a prior utterance
                 if (s.optBoolean("completed", false)) {
-                    if (completed.isEmpty() || completed.last() != t) completed.add(t)
+                    completed.add(t)
                 } else if (i == segs.length() - 1) {
                     partial = t
                 }

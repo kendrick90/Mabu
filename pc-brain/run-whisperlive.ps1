@@ -21,13 +21,23 @@ $py   = Join-Path $wl ".venv\Scripts\python.exe"
 $port = if ($args.Count -ge 1) { $args[0] } else { 9090 }
 
 $env:CUDA_VISIBLE_DEVICES = "0"
+# The large-v3-turbo weights are cached locally after first download; inference
+# is fully on-GPU via CTranslate2. Force offline so faster-whisper doesn't ping
+# HuggingFace for a revision check on each model load (faster reconnects, works
+# with no internet). Delete this line if you ever need to pull a new model.
+$env:HF_HUB_OFFLINE = "1"
 
 Write-Host "=== WhisperLive on 0.0.0.0:$port (GPU 0, raw PCM int16) ===" -ForegroundColor Cyan
 Push-Location $wl
 try {
-    # Merge the server's stderr (Python logging) into stdout so it shows as
-    # plain log text rather than PowerShell error records.
-    & $py run_server.py --port $port --backend faster_whisper --raw_pcm_input 2>&1
+    # Python logging goes to stderr; under Windows PowerShell native stderr
+    # renders as red ErrorRecords even with 2>&1. Coerce each line to a plain
+    # string (ForEach "$_") so the server window shows normal white log text.
+    # --max_connection_time: WhisperLive defaults to 300s and then disconnects
+    #   the client. Mabu holds one long-lived always-on connection, so bump it
+    #   way up (24h) -- otherwise the session drops every 5 minutes.
+    & $py run_server.py --port $port --backend faster_whisper --raw_pcm_input --max_connection_time 86400 2>&1 |
+        ForEach-Object { "$_" }
 } finally {
     Pop-Location
 }
