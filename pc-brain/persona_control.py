@@ -76,6 +76,13 @@ class PersonaControl(FrameProcessor):
         # Commands submitted from the control-API thread, drained on the pipeline
         # loop in process_frame (thread-safe hand-off, no cross-thread mutation).
         self._cmds = queue.Queue()
+        # Voice-clone capture state (referenced every frame in process_frame).
+        self._capturing = False
+        self._clip = bytearray()
+        self._clip_sr = None
+        self._clip_skip = 0
+        self._clip_target = 0
+        self._clone_name = None
 
     def submit_command(self, cmd: dict):
         """Thread-safe: enqueue a control command (from the HTTP API thread)."""
