@@ -95,16 +95,42 @@ IDLE/SLEEP; STOP = cancel stream + speech.
        and the APK packages `libjingle_peerconnection_so.so` under
        **armeabi-v7a** — WebRTC runs on the RK3288. (Published latest is 1.1.0;
        the repo's main is an unreleased 1.2.0.)
-     - **NEXT**: write a `PipecatClient` wrapper (Kotlin) using
-       `SmallWebRTCTransport(context)` + `PipecatClient`, connect to
-       `http://10.0.0.49:7860/api/offer` (add a firewall allow rule for 7860).
-       The SDK owns mic capture + speaker + **AEC** + the WebRTC data channel
-       (`onAppMessage` for agentic tools). Wire into `MainActivity` streaming
-       mode; mute button → SDK mic enable/disable. Then retire `RemoteAsr.kt` /
-       `RemoteTts.kt` / `StreamingLlama.kt` + the standalone WhisperLive server.
-       API: `PipecatClient(SmallWebRTCTransport(context), PipecatClientOptions(
-       callbacks = object: PipecatEventCallbacks(){...}))`; connect via the
-       offer endpoint. Core repo: github.com/pipecat-ai/pipecat-client-android.
+     - **DONE (2026-05-29)**: Kotlin client wrapper + MainActivity wiring.
+       - `app/.../PipecatVoice.kt` wraps `PipecatClient<SmallWebRTCTransport,
+         SmallWebRTCTransportConnectParams>` (published **1.1.0** API — verified
+         against the AAR, NOT the lagging docs site which still shows the old
+         `RTVIClient`/`Factory`). `SmallWebRTCTransport(context)` +
+         `PipecatClientOptions(callbacks, enableMic, enableCam=false)`; connect
+         via `client.connect(SmallWebRTCTransportConnectParams(webrtcRequestParams
+         = APIRequest(endpoint = offerUrl, requestData = Value.Object())))`.
+         IMPORTANT: PipecatClient captures the *constructing* thread
+         (`ThreadRef.forCurrent()`) for all callbacks/ops — build + call it on the
+         main thread (we do, from `onCreate`). Exposes connect/disconnect/release,
+         `setMuted` (→ `enableMic(!muted)`), `sendText` (debug SAY), and a
+         `Listener` (transcripts → bubble, bot speaking → status, `onServerMessage`
+         = the Phase-3 agentic-tool channel, logged for now).
+       - New **`cognitionMode = "pipecat"`** (alongside `streaming`/`local`, which
+         stay intact as fallback). `startPipecat()` runs in `onCreate`; mute button
+         → `setMuted`; `onMicDown`/`onMicUp`/`toggleMute` treat pipecat like
+         streaming (hands-free). `TuningSettings.pipecatOfferUrl` default
+         `http://10.0.0.49:7860/api/offer`. Manifest gained `MODIFY_AUDIO_SETTINGS`
+         + `ACCESS_NETWORK_STATE` (WebRTC audio route + connectivity).
+       - **`:app:compileDebugKotlin` is GREEN** against 1.1.0.
+     - **NEXT** (on-device, untested in code so far):
+       - **Firewall**: add an inbound allow for **TCP 7860** (Private profile) —
+         needs admin/UAC, not yet created. PowerShell:
+         `New-NetFirewallRule -DisplayName "Pipecat 7860 (Mabu brain)" -Direction
+         Inbound -Action Allow -Protocol TCP -LocalPort 7860 -Profile Private`
+         (run elevated). python313 inbound is already unblocked, so it may connect
+         without it, but follow the `pc-brain-firewall` memory and add the rule.
+       - Start the PC bot (`pc-brain/run-pipecat.ps1`), flip the device to
+         `cognitionMode = "pipecat"`, install, and verify the full loop +
+         turn-taking + barge-in on hardware.
+       - Once validated, **retire** `RemoteAsr.kt` / `RemoteTts.kt` /
+         `StreamingLlama.kt` (keep in git/local fallback) + the standalone
+         WhisperLive server, and make `"pipecat"` the default mode.
+       Core repo: github.com/pipecat-ai/pipecat-client-android; transport:
+       github.com/pipecat-ai/pipecat-client-android-transports.
 2. **Uncensored / idiosyncratic LLM** — trivial swap: point `run-server.ps1` at
    a different GGUF. Candidates: abliterated Qwen 2.5/3 7B (drop-in, same prompt
    format), Dolphin-Llama3, or a 24B (Venice/Dolphin-Mistral) — the 4090 has room.
@@ -148,6 +174,7 @@ the proof, then `launch_app`, then the `clone_voice` guided flow.
 
 | File | Purpose |
 |---|---|
+| `app/.../PipecatVoice.kt` | Pipecat SmallWebRTC client wrapper (`pipecat` mode). SDK owns mic/speaker/AEC/turn-taking; surfaces transcripts + speaking + server messages. Construct/call on main thread. |
 | `app/.../RemoteAsr.kt` | Always-on WhisperLive WS client. VAD endpoint + timestamp-filtered segments (discrete utterances) + reconnect. |
 | `app/.../RemoteTts.kt` | Chatterbox client. Pipelined synth→AudioTrack playback, in order; reports speaking for the echo guard. |
 | `app/.../StreamingLlama.kt` | llama-server SSE client. Sentence chunking + history. Guards org.json `optString` "null". |

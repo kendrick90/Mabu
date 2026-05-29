@@ -64,7 +64,14 @@ class TuningSettings {
      *  the tablet also adjust STREAM_MUSIC live between slider moves. */
     var ttsVolume = 0.22f
 
-    /** "local" = LlamaInference on-device; "streaming" = llama-server on LAN. */
+    /**
+     * "local"     = LlamaInference + Vosk on-device.
+     * "streaming" = llama-server (SSE) + WhisperLive (WS) + Chatterbox (HTTP),
+     *               orchestrated device-side (RemoteAsr/RemoteTts/StreamingLlama).
+     * "pipecat"   = single WebRTC session to the PC Pipecat pipeline
+     *               (pc-brain/pipecat_bot.py); the SDK owns mic/speaker/AEC/turn
+     *               -taking. Uses pipecatOfferUrl; the three URLs below are unused.
+     */
     var cognitionMode = "streaming"
     var llmServerUrl  = "http://10.0.0.49:8080"
     /** WhisperLive WebSocket ASR server (streaming mode). Vosk is the local
@@ -72,6 +79,8 @@ class TuningSettings {
     var asrServerUrl  = "ws://10.0.0.49:9090"
     /** Chatterbox TTS server (streaming mode). Pico is the local fallback. */
     var ttsServerUrl  = "http://10.0.0.49:8123"
+    /** Pipecat SmallWebRTC offer endpoint (pipecat mode). */
+    var pipecatOfferUrl = "http://10.0.0.49:7860/api/offer"
 
     fun load(prefs: SharedPreferences) {
         gazeGain           = prefs.getFloat("gazeGain",           gazeGain)
@@ -100,6 +109,7 @@ class TuningSettings {
         llmServerUrl       = prefs.getString("llmServerUrl",      llmServerUrl)  ?: llmServerUrl
         asrServerUrl       = prefs.getString("asrServerUrl",      asrServerUrl)  ?: asrServerUrl
         ttsServerUrl       = prefs.getString("ttsServerUrl",      ttsServerUrl)  ?: ttsServerUrl
+        pipecatOfferUrl    = prefs.getString("pipecatOfferUrl",   pipecatOfferUrl) ?: pipecatOfferUrl
     }
 
     fun save(prefs: SharedPreferences) {
@@ -130,6 +140,7 @@ class TuningSettings {
             putString("llmServerUrl",      llmServerUrl)
             putString("asrServerUrl",      asrServerUrl)
             putString("ttsServerUrl",      ttsServerUrl)
+            putString("pipecatOfferUrl",   pipecatOfferUrl)
             apply()
         }
     }
@@ -163,6 +174,7 @@ class TuningSettings {
         llmServerUrl       = "http://10.0.0.49:8080"
         asrServerUrl       = "ws://10.0.0.49:9090"
         ttsServerUrl       = "http://10.0.0.49:8123"
+        pipecatOfferUrl    = "http://10.0.0.49:7860/api/offer"
     }
 
     /** Nuclear reset: blow away calibration too. Use only when re-installing. */

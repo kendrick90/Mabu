@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     private var asr: AsrEngine? = null
     private var remoteAsr: RemoteAsr? = null
     private var remoteTts: RemoteTts? = null
+    private var pipecatVoice: PipecatVoice? = null
     private lateinit var micButton: TextView
     private var muteButton: TextView? = null
 
@@ -239,7 +240,12 @@ class MainActivity : AppCompatActivity() {
                 this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_RECORD_AUDIO
             )
         }
-        if (tuning.cognitionMode == "streaming") {
+        if (tuning.cognitionMode == "pipecat") {
+            // Single WebRTC session to the PC Pipecat pipeline. The SDK owns mic
+            // capture, the speaker, AEC and turn-taking, so none of the device-
+            // side ASR/TTS/echo-guard plumbing is constructed in this mode.
+            startPipecat()
+        } else if (tuning.cognitionMode == "streaming") {
             // Remote brain: ASR (WhisperLive WS) and LLM (llama-server SSE)
             // both live on the PC. Skip the on-device LLM preload AND Vosk --
             // neither is needed, and on 2 GB / 32-bit ARM every MB of VA we
@@ -315,7 +321,7 @@ class MainActivity : AppCompatActivity() {
         // Streaming mode is hands-free (always-on RemoteAsr). Mute now lives in
         // the volume cluster; the bottom button is a status line that also
         // toggles mute on tap (routed through the same toggleMute()).
-        if (tuning.cognitionMode == "streaming") {
+        if (tuning.cognitionMode == "streaming" || tuning.cognitionMode == "pipecat") {
             toggleMute()
             return
         }
@@ -330,7 +336,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onMicUp() {
-        if (tuning.cognitionMode == "streaming") return   // toggle handled on DOWN
+        // streaming + pipecat are hands-free; mute toggled on DOWN.
+        if (tuning.cognitionMode == "streaming" || tuning.cognitionMode == "pipecat") return
         val a = asr ?: return
         if (!a.isListening) return
         a.stopListening()
@@ -409,6 +416,55 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    // ---------- Pipecat (WebRTC) brain ----------------------------------------
+
+    /**
+     * Bring up the Pipecat SmallWebRTC client and connect to the PC pipeline.
+     * The SDK handles mic/speaker/AEC/turn-taking; we only surface transcripts
+     * to the speech bubble and the speaking state to the status line. Manual
+     * mute toggles the outbound mic track (see [toggleMute]).
+     */
+    private fun startPipecat() {
+        val voice = PipecatVoice(
+            context = this,
+            offerUrl = tuning.pipecatOfferUrl,
+            enableMic = !manualMute,
+            listener = object : PipecatVoice.Listener {
+                override fun onConnected() {
+                    micButton.text = if (manualMute) "🔇 muted" else "🎤 listening…"
+                }
+                override fun onDisconnected() {
+                    micButton.text = "⚠ brain offline"
+                    overlayView.setHeardText(null)
+                }
+                override fun onUserTranscript(text: String, isFinal: Boolean) {
+                    if (manualMute) return
+                    overlayView.setHeardText(text)   // speech bubble by the face
+                }
+                override fun onBotStartedSpeaking() {
+                    micButton.text = "🔊 speaking…"
+                }
+                override fun onBotStoppedSpeaking() {
+                    micButton.text = if (manualMute) "🔇 muted" else "🎤 listening…"
+                    overlayView.setHeardText(null)   // clear the bubble after a turn
+                }
+                override fun onServerMessage(data: ai.pipecat.client.types.Value) {
+                    // PC->device control channel for agentic tools (set_mode,
+                    // launch_app, clone_voice ...). Phase 3 dispatches these into
+                    // setMode()/MabuMotors. For now just log so we can see them.
+                    Log.i(TAG, "pipecat server message: $data")
+                }
+                override fun onError(message: String) {
+                    Log.e(TAG, "pipecat error: $message")
+                }
+            }
+        )
+        pipecatVoice = voice
+        voice.connect()
+        Log.i(TAG, "pipecat mode: connecting to ${tuning.pipecatOfferUrl}")
+        micButton.text = "🎤 connecting…"
+    }
+
     /**
      * Register a debug broadcast receiver so the app is fully drivable over
      * ADB -- no physical buttons needed. All actions are dispatched onto the
@@ -431,7 +487,12 @@ class MainActivity : AppCompatActivity() {
                         val text = intent.getStringExtra("text")?.trim().orEmpty()
                         if (text.isEmpty()) { Log.w(TAG, "SAY with no text"); return }
                         Log.i(TAG, "debug SAY: $text")
-                        handler.post { onTranscript(text) }
+                        handler.post {
+                            // In pipecat mode there's no device-side ASR/LLM to
+                            // drive; inject the text straight into the PC pipeline.
+                            val voice = pipecatVoice
+                            if (voice != null) voice.sendText(text) else onTranscript(text)
+                        }
                     }
                     ACTION_SPEAK -> {
                         val text = intent.getStringExtra("text")?.trim().orEmpty()
@@ -883,7 +944,8 @@ class MainActivity : AppCompatActivity() {
         try { asr?.release() } catch (_: Throwable) {}
         try { remoteAsr?.release() } catch (_: Throwable) {}
         try { remoteTts?.release() } catch (_: Throwable) {}
-        Log.i(TAG, "Released camera + motors + tts + asr + remoteTts")
+        try { pipecatVoice?.release() } catch (_: Throwable) {}
+        Log.i(TAG, "Released camera + motors + tts + asr + remoteTts + pipecat")
     }
 
     // ---------- Always-visible volume controls --------------------------------
@@ -929,6 +991,15 @@ class MainActivity : AppCompatActivity() {
 
     /** Manual mute toggle (sticky). Separate from the echo-guard auto-mute. */
     private fun toggleMute() {
+        // Pipecat owns the mic: just flip the outbound track. No echo guard
+        // (AEC handles that) and no responseActive bookkeeping.
+        pipecatVoice?.let { voice ->
+            manualMute = !manualMute
+            voice.setMuted(manualMute)
+            if (manualMute) overlayView.setHeardText(null)
+            updateMuteUi(manualMute)
+            return
+        }
         if (remoteAsr == null) return
         manualMute = !manualMute
         if (manualMute) {

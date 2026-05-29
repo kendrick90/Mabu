@@ -8,6 +8,11 @@
          Previously merged transitively from a dependency; declared explicitly
          now that RemoteAsr opens its own WebSocket. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Pipecat SmallWebRTC: the transport sets the audio route
+         (AudioManager.setSpeakerphoneOn) and WebRTC checks connectivity. Both
+         are install-time (normal) permissions, no runtime request needed. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <uses-feature
         android:name="android.hardware.camera.any"
