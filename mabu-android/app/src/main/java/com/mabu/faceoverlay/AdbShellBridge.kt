@@ -24,6 +24,7 @@ class AdbShellBridge {
     private val A_CNXN = 0x4e584e43
     private val A_OPEN = 0x4e45504f
     private val A_OKAY = 0x59414b4f
+    private val A_WRTE = 0x45545257
     private val A_AUTH = 0x48545541
     private val LOCAL_ID = 42
 

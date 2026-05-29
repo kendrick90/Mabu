@@ -14,8 +14,10 @@ the immediate next steps. Read this *before* the rest of the README.
   GPU 0 (RTX 4090); Quadro M6000 hidden via `CUDA_VISIBLE_DEVICES=0`.
   Start with `run-server.ps1` in that directory.
 - **Mabu side, streaming LLM path** — `StreamingLlama.kt` + OkHttp SSE
-  client + sentence-boundary chunking + per-sentence TTS queue. Built
-  and installed but **not yet verified end-to-end on the device.**
+  client + sentence-boundary chunking + per-sentence TTS queue.
+  **VERIFIED end-to-end on unit 4 (2026-05-28).** A spoken (or
+  ADB-injected) turn streams back from Qwen 2.5 7B on the 4090 in
+  ~350–520 ms total, with each sentence spoken as soon as it's parsed.
 
 `TuningSettings.cognitionMode` defaults to `"streaming"`; the local
 on-device LLM is still loaded at startup as a fallback. The user can
@@ -40,18 +42,48 @@ or wire a settings-panel control).
 WebSocket / SSE are the wire format from day one — don't fall back to
 HTTP request/response if streaming is feasible.
 
+## Driving the app over ADB (no buttons)
+
+The app registers a debug `BroadcastReceiver` (in `MainActivity.
+registerDebugReceiver`) so a host can drive it entirely over ADB —
+no touching the screen. **Broadcasts must target the package
+explicitly (`-p com.mabu.faceoverlay`)**, otherwise Android 8.0+'s
+implicit-broadcast restriction silently drops them (you'll see
+"Broadcast completed: result=0" but `onReceive` never fires). Quote the
+text for the *device* shell (single quotes inside the `adb shell "…"`
+double quotes) or spaces truncate the extra.
+
+```
+adb shell "am broadcast -a com.mabu.faceoverlay.SAY   -p com.mabu.faceoverlay --es text 'how are you today?'"
+adb shell "am broadcast -a com.mabu.faceoverlay.SPEAK -p com.mabu.faceoverlay --es text 'hello there'"
+adb shell "am broadcast -a com.mabu.faceoverlay.MODE  -p com.mabu.faceoverlay --es mode PUPPET"
+adb shell "am broadcast -a com.mabu.faceoverlay.STOP  -p com.mabu.faceoverlay"
+```
+
+- `SAY` — full ASR-equivalent path: LLM → streaming TTS (use this to
+  test the streaming brain without the mic).
+- `SPEAK` — TTS only.
+- `MODE` — FOLLOW / PUPPET / IDLE / SLEEP.
+- `STOP` — cancel in-flight stream + speech.
+
 ## Immediate next steps (priority order)
 
-1. **Verify streaming LLM end-to-end** — user holds mic, expects to hear
-   Qwen 2.5 7B's reply via Pico TTS, with each sentence speaking as soon
-   as it's parsed (not waiting for the full response). Watch logcat:
-   `MabuStreamLLM`, `MabuFaceOverlay: mabu sentence`. If the SSE client
-   has issues, the most likely culprits are URL routing (10.0.0.49 from
-   Mabu), OkHttp SSE event parsing edge cases, or token JSON shape
-   surprises from llama-server.
-2. **Skip the local-LLM preload when `cognitionMode == "streaming"`** —
-   it's eating ~470 MB of VA for nothing. Trivial guard in
-   `MainActivity.onCreate`.
+1. ~~**Verify streaming LLM end-to-end**~~ **DONE (2026-05-28).** Verified
+   via the `SAY` broadcast above; reply streams sentence-by-sentence in
+   ~350–520 ms. Two bugs fixed in the process:
+   - `StreamingLlama` prepended a literal `"null"` to the first sentence
+     — llama-server's first SSE delta is `{"content":null}` and
+     `org.json`'s `optString` returns `"null"` for an explicit JSON null.
+     Fixed with an `isNull("content")` guard.
+   - `AdbShellBridge` (from commit `c4464d1`) referenced an undeclared
+     `A_WRTE` constant — the tree did not compile. Added
+     `A_WRTE = 0x45545257`.
+2. ~~**Skip the local-LLM preload when `cognitionMode == "streaming"`**~~
+   **DONE (2026-05-28).** Guarded in `MainActivity.onCreate`
+   (`preloadLocalLlm = tuning.cognitionMode != "streaming"`); logcat shows
+   `LLM preload skipped (cognitionMode=streaming)`. The mic-ready state no
+   longer requires a local LLM in streaming mode. Flip cognitionMode to
+   `"local"` to restore the preload.
 3. **Whisper server on PC** — build `whisper.cpp` with CUDA, run the
    `server` example with `ggml-large-v3-turbo` on GPU 0. Test from PC
    with `curl` and a wav file.

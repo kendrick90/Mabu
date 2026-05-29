@@ -1,7 +1,10 @@
 package com.mabu.faceoverlay
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
@@ -34,6 +37,10 @@ class MainActivity : AppCompatActivity() {
     private var asr: AsrEngine? = null
     private lateinit var micButton: TextView
     private var streamingLlm: StreamingLlama? = null
+
+    // Debug control receiver -- lets a host drive the app over ADB without
+    // touching the screen. See registerDebugReceiver() for the action set.
+    private var debugReceiver: BroadcastReceiver? = null
 
     private val tuning = TuningSettings()
 
@@ -176,6 +183,7 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(root)
         updateVolumeDisplay()
+        registerDebugReceiver()
 
         // Eager TTS init so the first broadcast / button press doesn't get
         // dropped while Pico is still booting. Also set the persisted
@@ -209,12 +217,24 @@ class MainActivity : AppCompatActivity() {
         // contiguous virtual address space and we're on 32-bit ARM, so it
         // can't be allocated after Vosk + ML Kit + camera have fragmented
         // our VA layout. Pre-loading at startup gets it the first dibs.
+        //
+        // In streaming mode cognition lives on the PC, so we skip the local
+        // preload entirely -- it would otherwise burn ~470 MB of VA for a
+        // fallback that's never hit. Flip cognitionMode to "local" (settings
+        // / prefs) to bring it back.
+        val preloadLocalLlm = tuning.cognitionMode != "streaming"
         Thread {
-            handler.post { micButton.text = "🎤 loading LLM…" }
-            val llmOk = LlamaInference.load(
-                "/data/local/tmp/mabu.gguf", ctxSize = 1024, threads = 4
-            )
-            Log.i(TAG, "LLM preload: ${if (llmOk) "ok" else "FAILED"}")
+            val llmOk = if (preloadLocalLlm) {
+                handler.post { micButton.text = "🎤 loading LLM…" }
+                val ok = LlamaInference.load(
+                    "/data/local/tmp/mabu.gguf", ctxSize = 1024, threads = 4
+                )
+                Log.i(TAG, "LLM preload: ${if (ok) "ok" else "FAILED"}")
+                ok
+            } else {
+                Log.i(TAG, "LLM preload skipped (cognitionMode=streaming)")
+                false
+            }
 
             handler.post { micButton.text = "🎤 loading ASR…" }
             asr = AsrEngine(
@@ -224,8 +244,11 @@ class MainActivity : AppCompatActivity() {
                     handler.post { micButton.text = "🎤 …$partial" }
                 }
             )
+            // In streaming mode the brain is remote, so a local-LLM miss is
+            // expected and not a problem -- only ASR readiness gates the mic.
+            val brainOk = llmOk || tuning.cognitionMode == "streaming"
             handler.post {
-                micButton.text = if (asr?.isReady == true && llmOk) {
+                micButton.text = if (asr?.isReady == true && brainOk) {
                     "🎤 hold to talk"
                 } else if (asr?.isReady == true) {
                     "🎤 (no LLM)"
@@ -306,6 +329,64 @@ class MainActivity : AppCompatActivity() {
             Log.i(TAG, "mabu local (${dt}ms): $reply")
             if (reply.isNotBlank()) handler.post { tts.speak(reply) }
         }.start()
+    }
+
+    /**
+     * Register a debug broadcast receiver so the app is fully drivable over
+     * ADB -- no physical buttons needed. All actions are dispatched onto the
+     * main thread. Examples (from a host shell):
+     *
+     *   adb shell am broadcast -a com.mabu.faceoverlay.SAY   --es text "how are you?"
+     *   adb shell am broadcast -a com.mabu.faceoverlay.SPEAK --es text "hello there"
+     *   adb shell am broadcast -a com.mabu.faceoverlay.MODE  --es mode PUPPET
+     *   adb shell am broadcast -a com.mabu.faceoverlay.STOP
+     *
+     * SAY runs the full ASR-equivalent path (LLM -> streaming TTS); SPEAK is
+     * TTS-only; MODE switches the behavior mode; STOP cancels in-flight
+     * speech + stream.
+     */
+    private fun registerDebugReceiver() {
+        val rx = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    ACTION_SAY -> {
+                        val text = intent.getStringExtra("text")?.trim().orEmpty()
+                        if (text.isEmpty()) { Log.w(TAG, "SAY with no text"); return }
+                        Log.i(TAG, "debug SAY: $text")
+                        handler.post { onTranscript(text) }
+                    }
+                    ACTION_SPEAK -> {
+                        val text = intent.getStringExtra("text")?.trim().orEmpty()
+                        if (text.isEmpty()) { Log.w(TAG, "SPEAK with no text"); return }
+                        Log.i(TAG, "debug SPEAK: $text")
+                        handler.post { tts.speak(text) }
+                    }
+                    ACTION_MODE -> {
+                        val name = intent.getStringExtra("mode")?.trim()?.uppercase().orEmpty()
+                        val m = runCatching { Mode.valueOf(name) }.getOrNull()
+                        if (m == null) { Log.w(TAG, "MODE invalid: '$name'"); return }
+                        Log.i(TAG, "debug MODE: $m")
+                        handler.post { setMode(m) }
+                    }
+                    ACTION_STOP -> {
+                        Log.i(TAG, "debug STOP")
+                        handler.post {
+                            try { streamingLlm?.cancel() } catch (_: Throwable) {}
+                            try { tts.stop() } catch (_: Throwable) {}
+                        }
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(ACTION_SAY)
+            addAction(ACTION_SPEAK)
+            addAction(ACTION_MODE)
+            addAction(ACTION_STOP)
+        }
+        registerReceiver(rx, filter)
+        debugReceiver = rx
+        Log.i(TAG, "debug receiver registered (SAY / SPEAK / MODE / STOP)")
     }
 
     private fun calibrateCenter() {
@@ -715,6 +796,8 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacksAndMessages(null)
+        debugReceiver?.let { try { unregisterReceiver(it) } catch (_: Throwable) {} }
+        debugReceiver = null
         cameraSource?.release()
         try { motors.sleepPose(); Thread.sleep(400) } catch (_: Throwable) {}
         motors.close()
@@ -856,6 +939,12 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "MabuFaceOverlay"
         private const val REQ_CAMERA = 10
         private const val REQ_RECORD_AUDIO = 11
+
+        // Debug control broadcast actions (drive the app over ADB).
+        private const val ACTION_SAY   = "com.mabu.faceoverlay.SAY"
+        private const val ACTION_SPEAK = "com.mabu.faceoverlay.SPEAK"
+        private const val ACTION_MODE  = "com.mabu.faceoverlay.MODE"
+        private const val ACTION_STOP  = "com.mabu.faceoverlay.STOP"
 
         private const val ASR_MODEL_PATH = "/sdcard/vosk-model-en"
         private const val MABU_PERSONA =

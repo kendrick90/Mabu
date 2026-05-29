@@ -108,6 +108,10 @@ class StreamingLlama(
                     val choices = json.optJSONArray("choices") ?: return
                     if (choices.length() == 0) return
                     val delta = choices.getJSONObject(0).optJSONObject("delta") ?: return
+                    // The first delta is typically {"role":"assistant","content":null}.
+                    // org.json's optString returns the literal "null" for an explicit
+                    // JSON null (the default is only used for missing keys), so guard it.
+                    if (delta.isNull("content")) return
                     val token = delta.optString("content", "")
                     if (token.isEmpty()) return
                     full.append(token)
