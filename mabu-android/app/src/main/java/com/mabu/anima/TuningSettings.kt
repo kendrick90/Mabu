@@ -70,6 +70,8 @@ class TuningSettings {
     /** WhisperLive WebSocket ASR server (streaming mode). Vosk is the local
      *  fallback when cognitionMode != "streaming". */
     var asrServerUrl  = "ws://10.0.0.49:9090"
+    /** Chatterbox TTS server (streaming mode). Pico is the local fallback. */
+    var ttsServerUrl  = "http://10.0.0.49:8123"
 
     fun load(prefs: SharedPreferences) {
         gazeGain           = prefs.getFloat("gazeGain",           gazeGain)
@@ -97,6 +99,7 @@ class TuningSettings {
         cognitionMode      = prefs.getString("cognitionMode",     cognitionMode) ?: cognitionMode
         llmServerUrl       = prefs.getString("llmServerUrl",      llmServerUrl)  ?: llmServerUrl
         asrServerUrl       = prefs.getString("asrServerUrl",      asrServerUrl)  ?: asrServerUrl
+        ttsServerUrl       = prefs.getString("ttsServerUrl",      ttsServerUrl)  ?: ttsServerUrl
     }
 
     fun save(prefs: SharedPreferences) {
@@ -126,6 +129,7 @@ class TuningSettings {
             putString("cognitionMode",     cognitionMode)
             putString("llmServerUrl",      llmServerUrl)
             putString("asrServerUrl",      asrServerUrl)
+            putString("ttsServerUrl",      ttsServerUrl)
             apply()
         }
     }
@@ -158,6 +162,7 @@ class TuningSettings {
         cognitionMode      = "streaming"
         llmServerUrl       = "http://10.0.0.49:8080"
         asrServerUrl       = "ws://10.0.0.49:9090"
+        ttsServerUrl       = "http://10.0.0.49:8123"
     }
 
     /** Nuclear reset: blow away calibration too. Use only when re-installing. */

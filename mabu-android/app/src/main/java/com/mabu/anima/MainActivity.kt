@@ -36,6 +36,7 @@ class MainActivity : AppCompatActivity() {
     private val tts by lazy { TtsHelper(this) }
     private var asr: AsrEngine? = null
     private var remoteAsr: RemoteAsr? = null
+    private var remoteTts: RemoteTts? = null
     private lateinit var micButton: TextView
     private var muteButton: TextView? = null
 
@@ -247,18 +248,22 @@ class MainActivity : AppCompatActivity() {
                     }
                 } }
             )
-            // Hands-free: mute the mic whenever Mabu is speaking so it never
-            // transcribes its own TTS into a feedback loop.
-            tts.onSpeakingChanged = { speaking ->
-                remoteAsr?.muted = speaking
-                handler.post {
-                    if (!speaking) {
-                        handler.removeCallbacks(safetyUnmute)   // normal finish
-                        micButton.text = "🎤 listening…"
-                        overlayView.setHeardText(null)          // clear the bubble
+            // Remote voice (Chatterbox on the PC). Hands-free echo guard: mute
+            // the mic whenever Mabu is speaking so it never transcribes its own
+            // TTS into a feedback loop.
+            remoteTts = RemoteTts(
+                baseUrl = tuning.ttsServerUrl,
+                onSpeakingChanged = { speaking ->
+                    remoteAsr?.muted = speaking
+                    handler.post {
+                        if (!speaking) {
+                            handler.removeCallbacks(safetyUnmute)   // normal finish
+                            micButton.text = "🎤 listening…"
+                            overlayView.setHeardText(null)          // clear the bubble
+                        }
                     }
                 }
-            }
+            )
             remoteAsr?.start()      // always-on listening, no button
             Log.i(TAG, "streaming mode: RemoteAsr -> ${tuning.asrServerUrl}; " +
                 "local LLM + Vosk skipped; always-on listening")
@@ -329,15 +334,13 @@ class MainActivity : AppCompatActivity() {
         when (tuning.cognitionMode) {
             "streaming" -> {
                 overlayView.setHeardText(text)   // keep the heard words on screen
-                // Only gate the mic if we'll actually speak. With Pico disabled
-                // (it SIGSEGVs on this device) there's no voice to echo, so we
-                // stay listening continuously instead of wedging on "thinking".
-                if (USE_PICO_TTS) {
-                    remoteAsr?.muted = true
-                    micButton.text = "🎤 thinking…"
-                    handler.removeCallbacks(safetyUnmute)
-                    handler.postDelayed(safetyUnmute, SPEAK_WATCHDOG_MS)
-                }
+                // Mute the mic for the think + speak window so Mabu doesn't
+                // transcribe its own voice; RemoteTts re-opens it when playback
+                // drains. The watchdog recovers the mic if TTS never reports done.
+                remoteAsr?.muted = true
+                micButton.text = "🎤 thinking…"
+                handler.removeCallbacks(safetyUnmute)
+                handler.postDelayed(safetyUnmute, SPEAK_WATCHDOG_MS)
                 respondStreaming(text)
             }
             else -> {
@@ -360,24 +363,20 @@ class MainActivity : AppCompatActivity() {
                 val dt = System.currentTimeMillis() - t0
                 Log.i(TAG, "mabu sentence (+${dt}ms, first=$isFirst): $sentence")
                 spokeAnything = true
-                // Pico disabled (deterministic SIGSEGV); RemoteTts/CosyVoice
-                // will replace it. Until then, reply text is logged + shown in
-                // the bubble but not spoken, so the loop never wedges.
-                if (USE_PICO_TTS) handler.post { tts.speak(sentence, queueAdd = !isFirst) }
+                // Speak via the remote Chatterbox voice (Pico is dead on this
+                // device). RemoteTts pipelines synth + playback in order.
+                remoteTts?.speak(sentence)
             }
             override fun onDone(fullText: String) {
                 Log.i(TAG, "mabu done in ${System.currentTimeMillis() - t0}ms")
-                // If the reply produced no speech, TTS won't drain and the
+                // If the reply produced no speech, RemoteTts won't drain and the
                 // echo-guard mute would stick -- re-open the mic ourselves.
                 if (!spokeAnything) handler.post { remoteAsr?.muted = false }
             }
             override fun onError(e: Throwable) {
                 Log.e(TAG, "stream error", e)
                 handler.post {
-                    // This speaks, so TTS drain will re-open the mic; but if TTS
-                    // isn't ready, unmute directly so we don't go deaf.
-                    tts.speak("Sorry, I lost connection to my brain.")
-                    if (!tts.ready) remoteAsr?.muted = false
+                    remoteTts?.speak("Sorry, I lost connection to my brain.")
                 }
             }
         })
@@ -874,7 +873,8 @@ class MainActivity : AppCompatActivity() {
         try { tts.shutdown() } catch (_: Throwable) {}
         try { asr?.release() } catch (_: Throwable) {}
         try { remoteAsr?.release() } catch (_: Throwable) {}
-        Log.i(TAG, "Released camera + motors + tts + asr")
+        try { remoteTts?.release() } catch (_: Throwable) {}
+        Log.i(TAG, "Released camera + motors + tts + asr + remoteTts")
     }
 
     // ---------- Always-visible volume controls --------------------------------
@@ -1041,16 +1041,10 @@ class MainActivity : AppCompatActivity() {
         private const val ACTION_MODE  = "com.mabu.anima.MODE"
         private const val ACTION_STOP  = "com.mabu.anima.STOP"
 
-        // Max time the mic stays muted waiting for TTS to finish. If exceeded
-        // (e.g. Pico crashed), the watchdog re-opens the mic so Mabu can hear
-        // again. Generous so it never clips a normal multi-sentence reply.
-        private const val SPEAK_WATCHDOG_MS = 20000L
-
-        // Pico TTS SIGSEGVs deterministically on this device (see
-        // pico-tts-unreliable). Disabled until RemoteTts (CosyVoice on the PC)
-        // lands -- replies are shown in the bubble but not spoken, so the
-        // always-on listen loop never wedges on a TTS crash.
-        private const val USE_PICO_TTS = false
+        // Pure backstop: RemoteTts reliably reports "done" when playback drains
+        // (even on synth failure), so this only fires if TTS truly hangs. Sized
+        // long so it never clips a legit long reply (e.g. Mabu telling a story).
+        private const val SPEAK_WATCHDOG_MS = 90000L
 
         private const val ASR_MODEL_PATH = "/sdcard/vosk-model-en"
         private const val MABU_PERSONA =
