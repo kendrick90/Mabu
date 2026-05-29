@@ -60,7 +60,7 @@ class ChatterboxTTSService(TTSService):
     def can_generate_metrics(self) -> bool:
         return True
 
-    async def run_tts(self, text: str):
+    async def run_tts(self, text: str, context_id: str = ""):
         logger.debug(f"[chatterbox] synth: {text!r}")
         await self.start_ttfb_metrics()
         yield TTSStartedFrame()
