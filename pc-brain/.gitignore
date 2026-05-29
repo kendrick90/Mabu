@@ -10,3 +10,6 @@ pipecat/
 
 # Local LLM weights (multi-GB GGUFs) live in the repo now, but are not tracked.
 models/
+
+# Persona definitions + per-persona conversation memory (runtime state).
+personas/

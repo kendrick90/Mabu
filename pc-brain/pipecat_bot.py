@@ -38,6 +38,8 @@ from pipecat.services.tts_service import TTSService
 from pipecat.transports.base_transport import TransportParams
 
 from whisperlive_stt import WhisperLiveSTTService
+from persona_manager import PersonaManager
+from persona_control import PersonaControl
 
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://localhost:8080/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5-7b-instruct")
@@ -46,6 +48,10 @@ TTS_SAMPLE_RATE = int(os.environ.get("TTS_SAMPLE_RATE", "24000"))
 # Streaming STT backend (Option 1): the existing WhisperLive WS server. Loopback
 # on the PC, so no firewall rule needed. Start it with run-whisperlive.ps1.
 WHISPERLIVE_URL = os.environ.get("WHISPERLIVE_URL", "ws://localhost:9090")
+# Persona store lives in the repo (gitignored -- holds per-persona memory).
+PERSONAS_DIR = os.environ.get(
+    "PERSONAS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "personas")
+)
 
 MABU_PERSONA = (
     "You are Mabu, a small yellow social robot watching the user from a tabletop. "
@@ -120,16 +126,27 @@ async def run_pipeline(transport):
     # owns VAD/turn detection in Pipecat 1.x, so this is the analyzer that counts.
     vad = SileroVADAnalyzer()
 
-    context = LLMContext([{"role": "system", "content": MABU_PERSONA}])
+    # Persona store: seed the context from the ACTIVE persona (its system prompt
+    # + its own saved memory), not the hard-coded MABU_PERSONA. PersonaControl
+    # then handles voice commands ("become X", "new persona", ...) and swaps the
+    # live context. MABU_PERSONA only seeds the default persona on first run.
+    personas = PersonaManager(PERSONAS_DIR, MABU_PERSONA)
+    active = personas.active()
+    seed = [{"role": "system", "content": active["prompt"]}] + (active.get("memory") or [])
+    logger.info(f"[persona] active = {active.get('name')} (of {personas.display_names()})")
+
+    context = LLMContext(seed)
     aggregators = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=vad),
     )
+    persona_ctl = PersonaControl(personas, LLAMA_URL, stop_tokens=["<|im_end|>"])
 
     pipeline = Pipeline([
         transport.input(),
         stt,
         aggregators.user(),
+        persona_ctl,          # intercepts persona commands before the LLM
         llm,
         tts,
         transport.output(),
