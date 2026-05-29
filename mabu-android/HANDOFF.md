@@ -88,11 +88,23 @@ IDLE/SLEEP; STOP = cancel stream + speech.
      `uvicorn` `pipecat-ai-prebuilt` (NOT `-small-webrtc-prebuilt`). SmartTurn =
      `LocalSmartTurnAnalyzerV3`. `SmallWebRTCConnection.send_app_message` is the
      PC->device control channel for agentic tools.
-   - **Phase 2 (next)**: Android side. Add the Pipecat Kotlin SDK + SmallWebRTC
-     transport; device streams mic↔speaker to `/api/offer`; needs a firewall
-     allow rule for 7860. Then retire `RemoteAsr.kt`/`RemoteTts.kt`/
-     `StreamingLlama.kt` and the standalone WhisperLive server. Risk: WebRTC SDK
-     on Android 8.1 / ARMv7 / 2 GB.
+   - **Phase 2 (in progress)**: Android side.
+     - **DONE**: dep `ai.pipecat:small-webrtc-transport:1.1.0` (mavenCentral,
+       pulls `ai.pipecat:client:1.1.0`) added to `app/build.gradle.kts`. The
+       make-or-break risk is CLEARED: app builds clean, minSdk 24 ≤ our API 27,
+       and the APK packages `libjingle_peerconnection_so.so` under
+       **armeabi-v7a** — WebRTC runs on the RK3288. (Published latest is 1.1.0;
+       the repo's main is an unreleased 1.2.0.)
+     - **NEXT**: write a `PipecatClient` wrapper (Kotlin) using
+       `SmallWebRTCTransport(context)` + `PipecatClient`, connect to
+       `http://10.0.0.49:7860/api/offer` (add a firewall allow rule for 7860).
+       The SDK owns mic capture + speaker + **AEC** + the WebRTC data channel
+       (`onAppMessage` for agentic tools). Wire into `MainActivity` streaming
+       mode; mute button → SDK mic enable/disable. Then retire `RemoteAsr.kt` /
+       `RemoteTts.kt` / `StreamingLlama.kt` + the standalone WhisperLive server.
+       API: `PipecatClient(SmallWebRTCTransport(context), PipecatClientOptions(
+       callbacks = object: PipecatEventCallbacks(){...}))`; connect via the
+       offer endpoint. Core repo: github.com/pipecat-ai/pipecat-client-android.
 2. **Uncensored / idiosyncratic LLM** — trivial swap: point `run-server.ps1` at
    a different GGUF. Candidates: abliterated Qwen 2.5/3 7B (drop-in, same prompt
    format), Dolphin-Llama3, or a 24B (Venice/Dolphin-Mistral) — the 4090 has room.
