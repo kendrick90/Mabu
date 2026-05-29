@@ -38,6 +38,21 @@ Write-Host "=== Installing pipecat-ai + extras ===" -ForegroundColor Cyan
 & $py -m pip install "pipecat-ai[silero,webrtc,whisper,openai,local-smart-turn]" `
     aiohttp fastapi uvicorn pipecat-ai-prebuilt
 
+# Strip emoji from pipecat's import banner + runner prints -- they mojibake on
+# the Windows cp1252 console (and crashed before PYTHONUTF8). Targets only those
+# two files; idempotent.
+Write-Host "=== Stripping emoji from pipecat banner/runner ===" -ForegroundColor Cyan
+$strip = @'
+import os, pipecat
+base = os.path.dirname(pipecat.__file__)
+for f in [os.path.join(base, "__init__.py"), os.path.join(base, "runner", "run.py")]:
+    if not os.path.isfile(f): continue
+    s = open(f, encoding="utf-8").read()
+    c = "".join(ch for ch in s if ord(ch) < 128)
+    if c != s: open(f, "w", encoding="utf-8").write(c); print("de-emoji ->", f)
+'@
+$strip | & $py -
+
 Write-Host "=== Verifying ===" -ForegroundColor Cyan
 $cuda = & $py -c "import torch; print(torch.cuda.is_available())" 2>$null
 if ($cuda -notmatch "True") {
