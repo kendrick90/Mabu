@@ -1,0 +1,6 @@
+# Third-party clone (re-created by setup-whisperlive.ps1) and its venv.
+# We track only our own setup/run scripts + README, not upstream WhisperLive
+# or the multi-GB venv.
+whisperlive/
+*.log
+bubble_*.png
