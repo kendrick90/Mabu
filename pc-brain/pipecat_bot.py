@@ -151,7 +151,8 @@ async def run_pipeline(transport):
         user_params=LLMUserAggregatorParams(vad_analyzer=vad),
     )
     persona_ctl = PersonaControl(
-        personas, LLAMA_URL, stop_tokens=["<|im_end|>"], voice_state=voice_state
+        personas, LLAMA_URL, chatterbox_url=CHATTERBOX_URL,
+        stop_tokens=["<|im_end|>"], voice_state=voice_state,
     )
 
     pipeline = Pipeline([

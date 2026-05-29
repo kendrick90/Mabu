@@ -17,13 +17,26 @@ Switching swaps the live LLM context: system prompt := persona.prompt, history
 := that persona's saved memory. The outgoing persona's conversation is saved
 first, so each character remembers its own history across switches.
 """
+import io
 import re
+import wave
 
 import aiohttp
 from loguru import logger
 
-from pipecat.frames.frames import Frame, LLMContextFrame, TTSSpeakFrame
+from pipecat.frames.frames import (
+    Frame,
+    InputAudioRawFrame,
+    LLMContextFrame,
+    TTSSpeakFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+# Voice-clone capture window. We skip a lead-in (while Mabu's prompt is still
+# playing / the user gathers themselves), then keep CLONE_SECS of mic audio as
+# the reference clip Chatterbox clones from.
+CLONE_SKIP_SECS = 3.0
+CLONE_SECS = 8.0
 
 DESIGNER_PROMPT = (
     "You are a warm, playful persona designer helping the user invent a new "
@@ -46,14 +59,23 @@ class VoiceState:
 
 
 class PersonaControl(FrameProcessor):
-    def __init__(self, manager, llama_url: str, stop_tokens=None, voice_state=None, **kwargs):
+    def __init__(self, manager, llama_url: str, chatterbox_url: str = "",
+                 stop_tokens=None, voice_state=None, **kwargs):
         super().__init__(**kwargs)
         self._mgr = manager
         self._llama_url = llama_url.rstrip("/")
+        self._chatterbox_url = (chatterbox_url or "").rstrip("/")
         self._stop = stop_tokens or ["<|im_end|>"]
         self._voice = voice_state  # VoiceState, shared with the TTS service
         self._mode = "normal"  # "normal" | "workshop"
         self._prev_persona = None  # to restore on workshop cancel
+        # Voice-clone capture state.
+        self._capturing = False
+        self._clip = bytearray()
+        self._clip_sr = None
+        self._clip_skip = 0
+        self._clip_target = 0
+        self._clone_name = None
 
     def _apply_voice(self, persona):
         if self._voice is not None:
@@ -61,7 +83,21 @@ class PersonaControl(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+
+        # Voice-clone capture: buffer mic audio while still passing it through.
+        if self._capturing and isinstance(frame, InputAudioRawFrame):
+            await self.push_frame(frame, direction)
+            self._capture_chunk(frame)
+            if len(self._clip) >= self._clip_target:
+                await self._finish_clone()
+            return
+
         if isinstance(frame, LLMContextFrame):
+            if self._capturing:
+                # Ignore spoken turns while capturing -- don't let the LLM reply
+                # to "say a sentence" speech.
+                self._drop_command(frame.context)
+                return
             if await self._maybe_handle(frame):
                 return  # swallow: the LLM should NOT also reply to a command
         await self.push_frame(frame, direction)
@@ -75,8 +111,10 @@ class PersonaControl(FrameProcessor):
         return c if isinstance(c, str) else None
 
     def _drop_command(self, ctx):
-        """Remove the command turn the aggregator just appended."""
-        ctx.set_messages(ctx.messages[:-1])
+        """Remove the command turn the aggregator just appended (if any)."""
+        msgs = ctx.messages
+        if msgs and msgs[-1].get("role") == "user":
+            ctx.set_messages(msgs[:-1])
 
     async def _speak(self, text):
         await self.push_frame(TTSSpeakFrame(text))
@@ -127,6 +165,23 @@ class PersonaControl(FrameProcessor):
                 await self._save_workshop(ctx, name)
                 return True
             return False  # let the interview continue through to the LLM
+
+        # voice cloning: "clone/learn/record my voice (as <name>)"
+        if re.search(r"\b(clone|learn|record|capture|copy)\b.{0,20}\bvoice\b", low):
+            mm = re.search(r"\bas\s+(?P<name>[a-z0-9 '\-]+)$", low)
+            name = (mm.group("name").strip() if mm else "")
+            if not name:
+                # default: name the voice after the current persona
+                cur = self._mgr.active()
+                name = (cur.get("name") if cur else "myvoice")
+            await self._start_clone(ctx, name)
+            return True
+
+        # use an existing voice on the current persona: "use the <name> voice"
+        m = re.search(r"\buse (?:the )?(?P<name>[a-z0-9 '\-]+?) voice$", low)
+        if m:
+            await self._assign_voice(ctx, m.group("name").strip())
+            return True
 
         # switch -- only if the spoken name matches an existing persona
         m = re.search(
@@ -217,6 +272,80 @@ class PersonaControl(FrameProcessor):
             f"You are {name}, a small yellow social robot. Speak warmly and in "
             f"character, in one or two short sentences."
         )
+
+    # --- voice cloning ----------------------------------------------------
+    async def _start_clone(self, ctx, name):
+        self._drop_command(ctx)
+        if not self._chatterbox_url:
+            await self._speak("I can't reach my voice box to do that right now.")
+            return
+        self._clone_name = name
+        self._clip = bytearray()
+        self._clip_sr = None
+        self._capturing = True
+        logger.info(f"[persona] cloning voice '{name}': capturing ~{CLONE_SECS:.0f}s of mic")
+        await self._speak("Okay! Right after I finish, talk to me for a few seconds and I'll learn your voice.")
+
+    def _capture_chunk(self, frame):
+        if self._clip_sr is None:
+            self._clip_sr = frame.sample_rate
+            self._clip_skip = int(self._clip_sr * 2 * CLONE_SKIP_SECS)
+            self._clip_target = self._clip_skip + int(self._clip_sr * 2 * CLONE_SECS)
+        self._clip.extend(frame.audio)
+
+    async def _finish_clone(self):
+        self._capturing = False
+        pcm = bytes(self._clip[self._clip_skip:])  # drop the lead-in
+        sr = self._clip_sr or 16000
+        name = self._clone_name
+        self._clip = bytearray()
+        self._clip_sr = None
+        slug = await self._upload_clone(name, pcm, sr)
+        if not slug:
+            await self._speak("Hmm, that didn't take. We can try the voice again later.")
+            return
+        # Assign the cloned voice to the current persona.
+        active = self._mgr.active_name()
+        p = self._mgr.get(active)
+        if p:
+            p["voice"] = slug
+            self._mgr.save(p)
+            self._apply_voice(p)
+        logger.info(f"[persona] cloned + applied voice '{slug}' to persona '{active}'")
+        await self._speak("Got it -- this is how I sound now. What do you think?")
+
+    async def _upload_clone(self, name, pcm, sr):
+        buf = io.BytesIO()
+        w = wave.open(buf, "wb")
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(pcm)
+        w.close()
+        buf.seek(0)
+        try:
+            data = aiohttp.FormData()
+            data.add_field("name", name)
+            data.add_field("file", buf.read(), filename=f"{name}.wav", content_type="audio/wav")
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as s:
+                async with s.post(f"{self._chatterbox_url}/clone", data=data) as r:
+                    d = await r.json()
+                    return d.get("voice")
+        except Exception as e:
+            logger.warning(f"[persona] clone upload failed: {e}")
+            return None
+
+    async def _assign_voice(self, ctx, voice_name):
+        self._drop_command(ctx)
+        slug = self._mgr.slug(voice_name)
+        active = self._mgr.active_name()
+        p = self._mgr.get(active)
+        if p:
+            p["voice"] = slug
+            self._mgr.save(p)
+            self._apply_voice(p)
+        await self._speak(f"Okay, using the {voice_name} voice.")
 
     @staticmethod
     def _join(names):
