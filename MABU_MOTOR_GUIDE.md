@@ -123,8 +123,8 @@ Recompute checksum if NR_NEUTRAL or NT_NEUTRAL changes.
 | ELR   | 50      | Confirmed |
 | EUD   | 50      | Confirmed |
 | NE    | 25      | Confirmed — head pitch level |
-| NR    | 42      | **Visually confirmed** — wire=0x6B=107. 50 causes left twist. |
-| NT    | 45      | **Visually confirmed** — wire=0x73=115. 50 causes right tilt. |
+| NR    | 50      | **Updated 2026-05-29 — approved by operator.** wire=0x80=128. Head straight at 50. Previous value of 42 was incorrect. |
+| NT    | 45      | Visually confirmed. wire=0x73=115. Direction: lower=right, higher=left (confirmed 2026-05-29). |
 
 Test: from a fresh-boot "head-back + neck-turned-left + eyelids-half + eyes-up"
 rest pose, sending all 7 motors at the above neutrals returns the head to
@@ -138,11 +138,11 @@ straight-and-centered. Confirmed visually by user 2026-05-29.
 |-------|----------|----------|-------|
 | LDL   | 0        | 100      | **Full 0–100 confirmed 2026-05-29.** No grinding at either extreme. 0 = mechanical max-open hard stop (lids visibly stop opening here — cannot push further). 100 = fully closed. |
 | LDR   | 0        | 100      | **Full 0–100 confirmed 2026-05-29.** Behaves in sync with LDL. Same mechanical max-open stop at 0. |
-| ELR   | 15       | 85       | Confirmed safe |
-| EUD   | 5        | 85       | **Bottoms out slightly at 5** — raise if grinding |
+| ELR   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. |
+| EUD   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. 0 = max up, 100 = max down (inverted). |
 | NE    | 18       | 100      | **Community docs say 50 max — WRONG for this unit.** Confirmed [18, 100]. |
-| NR    | 20       | 80       | Confirmed safe |
-| NT    | ?        | ?        | Direction and limits not yet tested |
+| NR    | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. |
+| NT    | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. 0 = fully right, 100 = fully left. No grinding at either extreme. |
 
 > **Community docs warning:** Many online references state NE hard-stops at logical 50.
 > This is wrong for this unit. Full range [18, 100] confirmed working.
@@ -155,11 +155,11 @@ straight-and-centered. Confirmed visually by user 2026-05-29.
 |-------|---------------|---------------|
 | LDL   | Eyelid CLOSES   | Eyelid OPENS (0 = max open hard stop) |
 | LDR   | Eyelid CLOSES   | Eyelid OPENS (0 = max open hard stop) |
-| ELR   | Eyes look RIGHT | Eyes look LEFT |
-| EUD   | Eyes look DOWN  | Eyes look UP ← **INVERTED** |
+| ELR   | Eyes look RIGHT (100 = max right hard stop) | Eyes look LEFT (0 = max left hard stop) | Both extremes confirmed 2026-05-29, approved by operator |
+| EUD   | Eyes look DOWN (100 = max down hard stop) | Eyes look UP ← **INVERTED** (0 = max up hard stop) | Both extremes confirmed 2026-05-29, approved by operator |
 | NE    | Head tilts UP   | Head tilts DOWN |
-| NR    | Head turns LEFT | Head turns RIGHT |
-| NT    | Direction not confirmed | Direction not confirmed |
+| NR    | Head turns LEFT (100 = max left hard stop) | Head turns RIGHT (0 = max right hard stop) | Both extremes confirmed 2026-05-29, approved by operator |
+| NT    | Head tilts RIGHT (0 = max right hard stop) | Head tilts LEFT (100 = max left hard stop) | Both extremes confirmed 2026-05-29, approved by operator |
 
 **Eyelid hold-test result (2026-05-29):** 4s holds at logical 0, 25, 50, 80, 100.
 0 visibly most open; eyelids progressively close as the value increases; 100
