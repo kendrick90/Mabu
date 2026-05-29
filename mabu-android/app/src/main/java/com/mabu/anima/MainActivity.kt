@@ -40,13 +40,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var micButton: TextView
     private var muteButton: TextView? = null
 
+    // Mute has two INDEPENDENT sources: manual (user tapped mute — sticky) and
+    // auto (echo guard while a reply is in progress — transient). Effective mute
+    // = either. Kept separate so a finished reply can't clear a manual mute.
+    @Volatile private var manualMute = false
+    @Volatile private var responseActive = false
+
     // Safety net: if TTS never reports "done" (e.g. Pico SIGSEGVs mid-speech),
     // the echo-guard mute would stick and Mabu would go deaf. This re-opens the
     // mic after a generous timeout; it's cancelled on a normal speech-done.
     private val safetyUnmute = Runnable {
         Log.w(TAG, "TTS watchdog fired: re-opening mic (TTS likely crashed mid-speech)")
-        remoteAsr?.muted = false
-        if (tuning.cognitionMode == "streaming") micButton.text = "🎤 listening…"
+        responseActive = false
+        applyMute()
+        if (tuning.cognitionMode == "streaming") micButton.text = if (manualMute) "🔇 muted" else "🎤 listening…"
     }
     private var streamingLlm: StreamingLlama? = null
 
@@ -254,11 +261,12 @@ class MainActivity : AppCompatActivity() {
             remoteTts = RemoteTts(
                 baseUrl = tuning.ttsServerUrl,
                 onSpeakingChanged = { speaking ->
-                    remoteAsr?.muted = speaking
+                    responseActive = speaking
+                    applyMute()
                     handler.post {
                         if (!speaking) {
                             handler.removeCallbacks(safetyUnmute)   // normal finish
-                            micButton.text = "🎤 listening…"
+                            micButton.text = if (manualMute) "🔇 muted" else "🎤 listening…"
                             overlayView.setHeardText(null)          // clear the bubble
                         }
                     }
@@ -337,7 +345,8 @@ class MainActivity : AppCompatActivity() {
                 // Mute the mic for the think + speak window so Mabu doesn't
                 // transcribe its own voice; RemoteTts re-opens it when playback
                 // drains. The watchdog recovers the mic if TTS never reports done.
-                remoteAsr?.muted = true
+                responseActive = true
+                applyMute()
                 micButton.text = "🎤 thinking…"
                 handler.removeCallbacks(safetyUnmute)
                 handler.postDelayed(safetyUnmute, SPEAK_WATCHDOG_MS)
@@ -371,7 +380,7 @@ class MainActivity : AppCompatActivity() {
                 Log.i(TAG, "mabu done in ${System.currentTimeMillis() - t0}ms")
                 // If the reply produced no speech, RemoteTts won't drain and the
                 // echo-guard mute would stick -- re-open the mic ourselves.
-                if (!spokeAnything) handler.post { remoteAsr?.muted = false }
+                if (!spokeAnything) handler.post { responseActive = false; applyMute() }
             }
             override fun onError(e: Throwable) {
                 Log.e(TAG, "stream error", e)
@@ -918,18 +927,28 @@ class MainActivity : AppCompatActivity() {
         return panel
     }
 
-    /** Toggle the always-on mic (streaming mode). */
+    /** Manual mute toggle (sticky). Separate from the echo-guard auto-mute. */
     private fun toggleMute() {
-        val r = remoteAsr ?: return
-        val nowMuted = !r.muted
-        r.muted = nowMuted
-        if (nowMuted) { try { tts.stop() } catch (_: Throwable) {}; overlayView.setHeardText(null) }
-        updateMuteUi(nowMuted)
+        if (remoteAsr == null) return
+        manualMute = !manualMute
+        if (manualMute) {
+            // Interrupt anything Mabu is currently saying, and clear the bubble.
+            try { remoteTts?.stop() } catch (_: Throwable) {}
+            try { tts.stop() } catch (_: Throwable) {}
+            overlayView.setHeardText(null)
+        }
+        applyMute()
+        updateMuteUi(manualMute)
+    }
+
+    /** Effective mute = manual (user) OR auto (reply in progress). */
+    private fun applyMute() {
+        remoteAsr?.muted = manualMute || responseActive
     }
 
     private fun updateMuteUi(muted: Boolean) {
         muteButton?.text = if (muted) "🔇" else "🎤"
-        micButton.text = if (muted) "muted" else "🎤 listening…"
+        micButton.text = if (muted) "🔇 muted" else "🎤 listening…"
     }
 
     private fun adjustVolume(delta: Int) {
