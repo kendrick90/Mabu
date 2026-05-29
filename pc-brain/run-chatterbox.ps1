@@ -12,6 +12,10 @@ $port = if ($args.Count -ge 1) { $args[0] } else { 8123 }
 
 $env:CUDA_VISIBLE_DEVICES = "0"
 $env:CHATTERBOX_PORT = "$port"
+# Chatterbox's sampler prints a tqdm progress bar ("Sampling: ...") to stderr
+# per utterance; PowerShell flags those native-stderr lines as red
+# "RemoteException" noise. Disable tqdm -- purely cosmetic, no effect on output.
+$env:TQDM_DISABLE = "1"
 
 Write-Host "=== Chatterbox TTS on 0.0.0.0:$port (GPU 0) ===" -ForegroundColor Cyan
 # Coerce stderr (uvicorn/torch logging) to plain strings so the window isn't red.
