@@ -116,19 +116,38 @@ IDLE/SLEEP; STOP = cancel stream + speech.
          `http://10.0.0.49:7860/api/offer`. Manifest gained `MODIFY_AUDIO_SETTINGS`
          + `ACCESS_NETWORK_STATE` (WebRTC audio route + connectivity).
        - **`:app:compileDebugKotlin` is GREEN** against 1.1.0.
-     - **NEXT** (on-device, untested in code so far):
-       - **Firewall**: add an inbound allow for **TCP 7860** (Private profile) —
-         needs admin/UAC, not yet created. PowerShell:
-         `New-NetFirewallRule -DisplayName "Pipecat 7860 (Mabu brain)" -Direction
-         Inbound -Action Allow -Protocol TCP -LocalPort 7860 -Profile Private`
-         (run elevated). python313 inbound is already unblocked, so it may connect
-         without it, but follow the `pc-brain-firewall` memory and add the rule.
-       - Start the PC bot (`pc-brain/run-pipecat.ps1`), flip the device to
-         `cognitionMode = "pipecat"`, install, and verify the full loop +
-         turn-taking + barge-in on hardware.
-       - Once validated, **retire** `RemoteAsr.kt` / `RemoteTts.kt` /
-         `StreamingLlama.kt` (keep in git/local fallback) + the standalone
-         WhisperLive server, and make `"pipecat"` the default mode.
+     - **VALIDATED ON HARDWARE (2026-05-29, unit 4)**: APK installed, prefs
+       flipped to `pipecat` over ADB. Device negotiated WebRTC, reached
+       `bot ready`, started mic capture with `audio source=VOICE_COMMUNICATION`
+       (**AEC active**) + speaker playout + data channel. Debug `SAY` drives a
+       full turn: `sendText` → PC LLM → Chatterbox TTS → WebRTC audio → tablet
+       speaker (`bot-started/stopped-speaking` observed, two sentences). The only
+       untested leg is real voice-in (needs a human at the mic) — but the mic
+       track is live so it's ready.
+       - **Firewall**: inbound allow for **TCP 7860** (Private profile) is
+         CREATED + enabled (`Pipecat 7860 (Mabu brain)`).
+       - **Gotchas fixed during validation**:
+         - `pipecat_bot.py` `ChatterboxTTSService.run_tts` needed the new
+           `context_id` arg (pipecat 1.3.x calls `run_tts(self, text, context_id)`;
+           the 2-arg override raised "takes 2 positional but 3 were given" and
+           Mabu stayed silent). Fixed.
+         - Console mojibake (`≡ƒÜÇ Bot ready!`) was the **runner library's** banner,
+           not ours — fixed by setting the console to UTF-8 in `run-pipecat.ps1`
+           (chcp 65001 + Console.OutputEncoding), not by stripping emoji.
+       - **To reproduce the bring-up over ADB**: start the three PC servers
+         (llama 8080, Chatterbox 8123 via `run-chatterbox.ps1`, pipecat 7860 via
+         `run-pipecat.ps1` — Chatterbox MUST be up first, pipecat's TTS depends on
+         it); `am force-stop`; flip the pref with
+         `run-as com.mabu.anima sed -i 's/>streaming</>pipecat</' shared_prefs/tuning.xml`;
+         `am start -n com.mabu.anima/.MainActivity`. The transport does NOT
+         auto-reconnect — restart the app after restarting the bot.
+     - **NEXT**:
+       - Verify real voice-in + turn-taking + barge-in by speaking to the tablet.
+       - Then **retire** `RemoteAsr.kt` / `RemoteTts.kt` / `StreamingLlama.kt`
+         (keep in git/local fallback) + the standalone WhisperLive server, and
+         make `"pipecat"` the default `cognitionMode`.
+       - Settings-panel toggle for `pipecat` mode + `pipecatOfferUrl` (currently
+         only flippable via prefs/ADB).
        Core repo: github.com/pipecat-ai/pipecat-client-android; transport:
        github.com/pipecat-ai/pipecat-client-android-transports.
 2. **Uncensored / idiosyncratic LLM** — trivial swap: point `run-server.ps1` at
