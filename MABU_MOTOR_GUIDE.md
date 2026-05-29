@@ -73,12 +73,38 @@ Only include values for bits set in the bitmask.
 [0x01, single_bitmask, 0x01, wire_value]
 ```
 
-### Power-on frame (hardcoded — send once after cold start)
+### Power-on frame (hardcoded)
 ```
 FA 00 02 4F 7F 0B CB
 ```
-Must be sent before any movement commands after a motor board cold start.
-Wait ~500 ms after power-on before sending movement commands.
+
+#### Cold-boot wake-up sequence (CRITICAL — confirmed 2026-05-29)
+After a fresh Mabu boot, **sending power-on ONCE is not enough.** The motor board
+will silently ignore subsequent commands even though bytes are reaching `/dev/ttyS1`
+and the motors are clearly powered (head stiff, holding position).
+
+**Working wake-up sequence — must do this once per cold boot:**
+```
+1. Send power-on (FA 00 02 4F 7F 0B CB)
+2. Wait 200 ms
+3. Repeat steps 1-2 a total of 5 times
+4. Wait 1000 ms
+5. Send the first movement command
+```
+All of the above MUST happen inside a single TCP connection to the bridge (or a
+single open of `/dev/ttyS1`). Splitting it across multiple connections has been
+observed to fail.
+
+Once the board has been woken this way, subsequent connections only need a single
+power-on (or none at all) — the board stays alive until the next cold boot.
+
+**Why this is needed:** Empirically determined. Likely the motor-board MCU has a
+post-boot init period during which it drops UART bytes, so the first few power-on
+frames are lost. Multiple repetitions ensure at least one lands after the MCU is
+ready to receive.
+
+### Wait ~500 ms after power-on before sending movement commands
+(only applies once the board is already awake — not for the cold-boot sequence above)
 
 ### All-motors center frame (pre-computed)
 ```
@@ -88,7 +114,7 @@ Recompute checksum if NR_NEUTRAL or NT_NEUTRAL changes.
 
 ---
 
-## 4. Neutral Positions (This Unit — Unit confirmed 2026-05-29)
+## 4. Neutral Positions (This Unit — Visually confirmed 2026-05-29)
 
 | Motor | Neutral | Notes |
 |-------|---------|-------|
@@ -96,9 +122,13 @@ Recompute checksum if NR_NEUTRAL or NT_NEUTRAL changes.
 | LDR   | 25      | ~Mostly open |
 | ELR   | 50      | Confirmed |
 | EUD   | 50      | Confirmed |
-| NE    | 25      | Mechanical rest position at boot |
-| NR    | 42      | Community observed wire=0x6B=107≈42. **50 causes left twist on this unit.** |
-| NT    | 45      | Community observed wire=0x72=114≈45. **50 causes right tilt on this unit.** |
+| NE    | 25      | Confirmed — head pitch level |
+| NR    | 42      | **Visually confirmed** — wire=0x6B=107. 50 causes left twist. |
+| NT    | 45      | **Visually confirmed** — wire=0x73=115. 50 causes right tilt. |
+
+Test: from a fresh-boot "head-back + neck-turned-left + eyelids-half + eyes-up"
+rest pose, sending all 7 motors at the above neutrals returns the head to
+straight-and-centered. Confirmed visually by user 2026-05-29.
 
 ---
 
@@ -217,7 +247,8 @@ Wire value from CSV: `wire = clamp(int(round(csv_value + 128)), 0, 255)`
 
 ## 10. Known Issues / Gotchas Checklist
 
-- [ ] Always send power-on (`FA 00 02 4F 7F 0B CB`) after motor board cold start
+- [ ] **Cold boot: send power-on 5x with 200ms gaps + 1s wait** — single power-on does not wake the board (see Section 3 cold-boot wake-up)
+- [ ] All wake-up frames must be in ONE TCP connection (or one open of `/dev/ttyS1`) — splitting across connections has failed
 - [ ] Verify bridge is running before starting app (`netstat | grep 7777`)
 - [ ] Never open the bridge twice
 - [ ] NE range is [18, 100] — do NOT limit to 50 based on community docs
@@ -227,3 +258,30 @@ Wire value from CSV: `wire = clamp(int(round(csv_value + 128)), 0, 255)`
 - [ ] EUD soft min = 5 may cause slight grinding — raise to 8 if needed
 - [ ] PowerShell `[math]::Round(50 * 2.55)` = 127 not 128 — use floor+0.5 formula
 - [ ] PowerShell byte[] + byte[] = Object[] — build frames with indexed assignment only
+
+---
+
+## 11. "Motors not responding" — diagnostic order
+
+When motors don't move, work through these in order before suspecting protocol or wiring:
+
+1. **Limp vs stiff test.** Gently push the head with a finger.
+   - **Limp** → motor board is unpowered. Wiring/power issue, NOT a software problem.
+   - **Stiff** → board is powered and holding position. Continue below.
+2. **Bridge alive?** `adb shell "busybox netstat -tlnp | grep 7777"` — must show LISTEN.
+3. **Is this a cold boot?** If yes → run the 5x power-on wake-up sequence (Section 3).
+4. **Bridge or board?** Kill the bridge and write to `/dev/ttyS1` directly from adb shell.
+   If direct write works but the bridge doesn't → bridge bug. If neither works → board issue.
+5. **Read from `/dev/ttyS1`.** Some boards send heartbeat bytes. Silence here doesn't prove
+   the board is dead (the Mabu motor board appears silent in normal operation), but bytes
+   appearing would prove it's alive.
+
+### Rabbit holes to avoid (already investigated, don't re-chase)
+
+- **`/sys/class/gpio_control` / `inhuasoft_gpio_control` driver.** This is a Catalia-custom
+  GPIO control interface exposing 3 GPIO pins (controllers 0xA8/0xA9, pins 16/19/9).
+  The control file is `/sys/devices/virtual/gpio_control/gpio/gpio_control`, mode
+  `-rw-rw-r-- root:root`. Shell user **cannot write to it without root**, and we have
+  no root path on this unit. Even if it does enable motor power, it's not reachable
+  from our environment. Don't go down this rabbit hole — the motor board has its own
+  power that survives reboots, the issue is always wake-up/state, not power-enable.
