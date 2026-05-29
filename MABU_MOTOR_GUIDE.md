@@ -118,8 +118,8 @@ Recompute checksum if NR_NEUTRAL or NT_NEUTRAL changes.
 
 | Motor | Neutral | Notes |
 |-------|---------|-------|
-| LDL   | 25      | ~Mostly open |
-| LDR   | 25      | ~Mostly open |
+| LDL   | 25      | ~Mostly open. For *most* open, drive to 0 (mechanical limit, no grinding). |
+| LDR   | 25      | ~Mostly open. For *most* open, drive to 0 (mechanical limit, no grinding). |
 | ELR   | 50      | Confirmed |
 | EUD   | 50      | Confirmed |
 | NE    | 25      | Confirmed — head pitch level |
@@ -136,8 +136,8 @@ straight-and-centered. Confirmed visually by user 2026-05-29.
 
 | Motor | Soft Min | Soft Max | Notes |
 |-------|----------|----------|-------|
-| LDL   | 15       | 85       | Untested beyond soft limits |
-| LDR   | 15       | 85       | Untested beyond soft limits |
+| LDL   | 0        | 100      | **Full 0–100 confirmed 2026-05-29.** No grinding at either extreme. 0 = mechanical max-open hard stop (lids visibly stop opening here — cannot push further). 100 = fully closed. |
+| LDR   | 0        | 100      | **Full 0–100 confirmed 2026-05-29.** Behaves in sync with LDL. Same mechanical max-open stop at 0. |
 | ELR   | 15       | 85       | Confirmed safe |
 | EUD   | 5        | 85       | **Bottoms out slightly at 5** — raise if grinding |
 | NE    | 18       | 100      | **Community docs say 50 max — WRONG for this unit.** Confirmed [18, 100]. |
@@ -153,11 +153,18 @@ straight-and-centered. Confirmed visually by user 2026-05-29.
 
 | Motor | Higher value → | Lower value → |
 |-------|---------------|---------------|
+| LDL   | Eyelid CLOSES   | Eyelid OPENS (0 = max open hard stop) |
+| LDR   | Eyelid CLOSES   | Eyelid OPENS (0 = max open hard stop) |
 | ELR   | Eyes look RIGHT | Eyes look LEFT |
 | EUD   | Eyes look DOWN  | Eyes look UP ← **INVERTED** |
 | NE    | Head tilts UP   | Head tilts DOWN |
 | NR    | Head turns LEFT | Head turns RIGHT |
 | NT    | Direction not confirmed | Direction not confirmed |
+
+**Eyelid hold-test result (2026-05-29):** 4s holds at logical 0, 25, 50, 80, 100.
+0 visibly most open; eyelids progressively close as the value increases; 100
+fully closed. The max-open position at 0 looks slightly less wide than a human's
+fully-open eye — this is the mechanical hard stop, not a software limit.
 
 **EUD is inverted on this unit.** Lower logical value = eyes look upward.
 All other units in community docs may differ — always test per unit.
