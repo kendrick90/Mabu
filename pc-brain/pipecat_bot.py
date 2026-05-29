@@ -95,7 +95,20 @@ async def run_pipeline(transport):
     # Streaming STT via WhisperLive (partials + finals), replacing the segmented
     # in-process WhisperSTTService. Pipecat VAD/SmartTurn still own turn-taking.
     stt = WhisperLiveSTTService(url=WHISPERLIVE_URL, model="large-v3-turbo", language="en")
-    llm = OpenAILLMService(base_url=LLAMA_URL, api_key="local", model=LLM_MODEL)
+    # stop on "<|im_end|>": with the forced ChatML template, Nemo-based models
+    # (Rocinante) emit the literal "<|im_end|>" as text instead of halting (the
+    # token isn't native to their tokenizer), so it leaked into the TTS. llama-
+    # server honours the OpenAI `stop` param. Harmless for Qwen (also ChatML).
+    # Temperature 0.8 suits the RP/character model.
+    llm = OpenAILLMService(
+        base_url=LLAMA_URL,
+        api_key="local",
+        model=LLM_MODEL,
+        params=OpenAILLMService.InputParams(
+            temperature=0.8,
+            extra={"stop": ["<|im_end|>"]},
+        ),
+    )
     tts = ChatterboxTTSService(base_url=CHATTERBOX_URL, sample_rate=TTS_SAMPLE_RATE)
 
     # In Pipecat 1.x, VAD / user-turn detection lives on the USER AGGREGATOR, not

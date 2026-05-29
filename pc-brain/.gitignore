@@ -7,3 +7,6 @@ bubble_*.png
 chatterbox/
 pipecat/
 *.log.err
+
+# Local LLM weights (multi-GB GGUFs) live in the repo now, but are not tracked.
+models/
