@@ -226,4 +226,11 @@ confirmed hardware testing. Update before shipping:
 | `NECK_MAX` | 80.0 | 100.0 | Full range confirmed |
 | `NE_MIN` | 18.0 | 0.0 | Full range confirmed |
 | `EYELID_NEUTRAL` (in MabuMotors) | 25 | 20 | operator-approved 2026-05-29 |
-| `NT` hardcoded in `moveAll` | 50.0 | 45.0 | Confirmed neutral |
+| `NE_NEUTRAL` (in MabuMotors) | 25 | 50 | operator-approved 2026-05-29 |
+| `NR_NEUTRAL` (in MabuMotors) | 42 | 50 | operator-approved 2026-05-29 |
+| `NT` hardcoded in `moveAll` | 50.0 | 50.0 | Confirmed neutral — already correct |
+| `NE_MIN` | 18.0 | 0.0 | Full range confirmed |
+| `EYE_SOFT_MIN` | 15.0 | 0.0 | Full range confirmed |
+| `EYE_SOFT_MAX` | 85.0 | 100.0 | Full range confirmed |
+| `NECK_MIN` | 20.0 | 0.0 | Full range confirmed |
+| `NECK_MAX` | 80.0 | 100.0 | Full range confirmed |
