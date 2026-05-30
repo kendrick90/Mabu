@@ -118,9 +118,9 @@ Recompute checksum if NR_NEUTRAL or NT_NEUTRAL changes.
 
 | Motor | Neutral | Notes |
 |-------|---------|-------|
-| LDL   | 25      | ~Mostly open. For *most* open, drive to 0 (mechanical limit, no grinding). |
-| LDR   | 25      | ~Mostly open. For *most* open, drive to 0 (mechanical limit, no grinding). |
-| ELR   | 50      | Confirmed |
+| LDL   | 20      | **Updated 2026-05-29 — approved by operator.** wire=0x33=51. Mostly open. For max open drive to 0. Previous value of 25 was incorrect. |
+| LDR   | 20      | **Updated 2026-05-29 — approved by operator.** wire=0x33=51. Matches LDL. For max open drive to 0. Previous value of 25 was incorrect. |
+| ELR   | 50      | **Confirmed 2026-05-29 — approved by operator.** wire=0x80=128. |
 | EUD   | 50      | Confirmed |
 | NE    | 25      | Confirmed — head pitch level |
 | NR    | 50      | **Updated 2026-05-29 — approved by operator.** wire=0x80=128. Head straight at 50. Previous value of 42 was incorrect. |
@@ -139,7 +139,7 @@ straight-and-centered. Confirmed visually by user 2026-05-29.
 | LDL   | 0        | 100      | **Full 0–100 confirmed 2026-05-29.** No grinding at either extreme. 0 = mechanical max-open hard stop (lids visibly stop opening here — cannot push further). 100 = fully closed. |
 | LDR   | 0        | 100      | **Full 0–100 confirmed 2026-05-29.** Behaves in sync with LDL. Same mechanical max-open stop at 0. |
 | ELR   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. |
-| EUD   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. 0 = max up, 100 = max down (inverted). |
+| EUD   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. 0 = max up, 100 = max down (inverted). **Allow ~2s settle time after commanding 0 before sending next command — motor needs time to stop at hard stop or it will oscillate.** |
 | NE    | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. Community docs say 50 max — WRONG for this unit. Previous lower limit of 18 was also wrong. |
 | NR    | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. |
 | NT    | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. 0 = fully right, 100 = fully left. No grinding at either extreme. |
@@ -195,6 +195,13 @@ adb shell "busybox netstat -tlnp | grep 7777"
 6. adb shell "am start -n com.mabu.facetrack/.MainActivity"
 ```
 The app auto-starts at boot before the bridge is ready, so force-stop + restart is mandatory.
+
+### Stop the app before manual testing
+**CRITICAL for manual testing sessions:** The MabuFaceTrack app auto-starts at boot and sends motor commands continuously. If it is running while you send test commands, motors will fight between two senders and oscillate. Always force-stop it before any manual test:
+```bash
+adb shell "am force-stop com.mabu.facetrack"
+```
+Note: force-stopping the app also kills the bridge (same process group). Restart the bridge after.
 
 ### Critical bridge rules
 - **NEVER start the bridge twice.** A second instance opens `/dev/ttyS1` again, resetting
@@ -281,6 +288,9 @@ When motors don't move, work through these in order before suspecting protocol o
 5. **Read from `/dev/ttyS1`.** Some boards send heartbeat bytes. Silence here doesn't prove
    the board is dead (the Mabu motor board appears silent in normal operation), but bytes
    appearing would prove it's alive.
+
+### NEVER reboot Mabu via ADB
+`adb reboot` has caused WiFi to not reconnect after boot, leaving the device unreachable with no recovery path (no USB, no physical buttons). **Do not run `adb reboot` under any circumstances.** If a reboot is truly needed, power-cycle the physical hardware instead.
 
 ### Rabbit holes to avoid (already investigated, don't re-chase)
 
