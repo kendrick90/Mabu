@@ -118,13 +118,13 @@ Recompute checksum if NR_NEUTRAL or NT_NEUTRAL changes.
 
 | Motor | Neutral | Notes |
 |-------|---------|-------|
-| LDL   | 25      | ~Mostly open |
-| LDR   | 25      | ~Mostly open |
-| ELR   | 50      | Confirmed |
+| LDL   | 20      | **Updated 2026-05-29 — approved by operator.** wire=0x33=51. Mostly open. For max open drive to 0. Previous value of 25 was incorrect. |
+| LDR   | 20      | **Updated 2026-05-29 — approved by operator.** wire=0x33=51. Matches LDL. For max open drive to 0. Previous value of 25 was incorrect. |
+| ELR   | 50      | **Confirmed 2026-05-29 — approved by operator.** wire=0x80=128. |
 | EUD   | 50      | Confirmed |
-| NE    | 25      | Confirmed — head pitch level |
-| NR    | 42      | **Visually confirmed** — wire=0x6B=107. 50 causes left twist. |
-| NT    | 45      | **Visually confirmed** — wire=0x73=115. 50 causes right tilt. |
+| NE    | 50      | **Updated 2026-05-29 — approved by operator.** wire=0x80=128. Head level at 50. Previous value of 25 was incorrect. |
+| NR    | 50      | **Updated 2026-05-29 — approved by operator.** wire=0x80=128. Head straight at 50. Previous value of 42 was incorrect. |
+| NT    | 50      | **Updated 2026-05-29 — approved by operator.** wire=0x80=128. Head level at 50. Previous value of 45 was incorrect. Direction: lower=right tilt, higher=left tilt. |
 
 Test: from a fresh-boot "head-back + neck-turned-left + eyelids-half + eyes-up"
 rest pose, sending all 7 motors at the above neutrals returns the head to
@@ -136,16 +136,15 @@ straight-and-centered. Confirmed visually by user 2026-05-29.
 
 | Motor | Soft Min | Soft Max | Notes |
 |-------|----------|----------|-------|
-| LDL   | 15       | 85       | Untested beyond soft limits |
-| LDR   | 15       | 85       | Untested beyond soft limits |
-| ELR   | 15       | 85       | Confirmed safe |
-| EUD   | 5        | 85       | **Bottoms out slightly at 5** — raise if grinding |
-| NE    | 18       | 100      | **Community docs say 50 max — WRONG for this unit.** Confirmed [18, 100]. |
-| NR    | 20       | 80       | Confirmed safe |
-| NT    | ?        | ?        | Direction and limits not yet tested |
+| LDL   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. 0 = max open hard stop, 100 = fully closed. No grinding at either extreme. |
+| LDR   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. Matches LDL. 0 = max open hard stop, 100 = fully closed. No grinding at either extreme. |
+| ELR   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. |
+| EUD   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. 0 = max up, 100 = max down (inverted). **KNOWN BUG: commanding EUD=0 then moving away in under ~2000ms causes eye oscillation. Always allow 2000ms+ settle at EUD=0. See Section 12.** |
+| NE    | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. Community docs say 50 max — WRONG for this unit. Previous lower limit of 18 was also wrong. |
+| NR    | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. |
+| NT    | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. 0 = fully right, 100 = fully left. No grinding at either extreme. |
 
-> **Community docs warning:** Many online references state NE hard-stops at logical 50.
-> This is wrong for this unit. Full range [18, 100] confirmed working.
+> **Community docs warning:** Many online references state NE hard-stops at logical 50, and earlier testing on this unit suggested a lower limit of 18. Both are wrong — full range [0, 100] confirmed 2026-05-29, approved by operator.
 
 ---
 
@@ -153,11 +152,18 @@ straight-and-centered. Confirmed visually by user 2026-05-29.
 
 | Motor | Higher value → | Lower value → |
 |-------|---------------|---------------|
-| ELR   | Eyes look RIGHT | Eyes look LEFT |
-| EUD   | Eyes look DOWN  | Eyes look UP ← **INVERTED** |
-| NE    | Head tilts UP   | Head tilts DOWN |
-| NR    | Head turns LEFT | Head turns RIGHT |
-| NT    | Direction not confirmed | Direction not confirmed |
+| LDL   | Eyelid CLOSES   | Eyelid OPENS (0 = max open hard stop) |
+| LDR   | Eyelid CLOSES   | Eyelid OPENS (0 = max open hard stop) |
+| ELR   | Eyes look RIGHT (100 = max right hard stop) | Eyes look LEFT (0 = max left hard stop) | Both extremes confirmed 2026-05-29, approved by operator |
+| EUD   | Eyes look DOWN (100 = max down hard stop) | Eyes look UP ← **INVERTED** (0 = max up hard stop) | Both extremes confirmed 2026-05-29, approved by operator |
+| NE    | Head tilts UP (100 = max up) | Head tilts DOWN (0 = max down) | Both extremes + direction confirmed 2026-05-29, approved by operator |
+| NR    | Head turns LEFT (100 = max left hard stop) | Head turns RIGHT (0 = max right hard stop) | Both extremes confirmed 2026-05-29, approved by operator |
+| NT    | Head tilts RIGHT (0 = max right hard stop) | Head tilts LEFT (100 = max left hard stop) | Both extremes confirmed 2026-05-29, approved by operator |
+
+**Eyelid hold-test result (2026-05-29):** 4s holds at logical 0, 25, 50, 80, 100.
+0 visibly most open; eyelids progressively close as the value increases; 100
+fully closed. The max-open position at 0 looks slightly less wide than a human's
+fully-open eye — this is the mechanical hard stop, not a software limit.
 
 **EUD is inverted on this unit.** Lower logical value = eyes look upward.
 All other units in community docs may differ — always test per unit.
@@ -189,6 +195,13 @@ adb shell "busybox netstat -tlnp | grep 7777"
 6. adb shell "am start -n com.mabu.facetrack/.MainActivity"
 ```
 The app auto-starts at boot before the bridge is ready, so force-stop + restart is mandatory.
+
+### Stop the app before manual testing
+**CRITICAL for manual testing sessions:** The MabuFaceTrack app auto-starts at boot and sends motor commands continuously. If it is running while you send test commands, motors will fight between two senders and oscillate. Always force-stop it before any manual test:
+```bash
+adb shell "am force-stop com.mabu.facetrack"
+```
+Note: force-stopping the app also kills the bridge (same process group). Restart the bridge after.
 
 ### Critical bridge rules
 - **NEVER start the bridge twice.** A second instance opens `/dev/ttyS1` again, resetting
@@ -276,6 +289,9 @@ When motors don't move, work through these in order before suspecting protocol o
    the board is dead (the Mabu motor board appears silent in normal operation), but bytes
    appearing would prove it's alive.
 
+### NEVER reboot Mabu via ADB
+`adb reboot` has caused WiFi to not reconnect after boot, leaving the device unreachable with no recovery path (no USB, no physical buttons). **Do not run `adb reboot` under any circumstances.** If a reboot is truly needed, power-cycle the physical hardware instead.
+
 ### Rabbit holes to avoid (already investigated, don't re-chase)
 
 - **`/sys/class/gpio_control` / `inhuasoft_gpio_control` driver.** This is a Catalia-custom
@@ -285,3 +301,30 @@ When motors don't move, work through these in order before suspecting protocol o
   no root path on this unit. Even if it does enable motor power, it's not reachable
   from our environment. Don't go down this rabbit hole — the motor board has its own
   power that survives reboots, the issue is always wake-up/state, not power-enable.
+
+---
+
+## 12. Known Bugs
+
+### EUD=0 hard-stop oscillation (discovered 2026-05-29)
+
+**Symptom:** After commanding EUD=0 (max up), if a subsequent EUD command is sent
+within ~2000ms, the eyes oscillate up and down before settling.
+
+**Trigger:** `EUD=0` (hold < 2000ms) → any EUD command → oscillation.
+
+**Does NOT trigger:** `EUD=0` (hold ≥ 2000ms) → any EUD command → clean movement.
+
+**Not observed at:** EUD=100 (max down) under same conditions.
+
+**Hypothesis:** Mechanical rebound at the hard stop. The motor overshoots/bounces when
+commanded away from the hard mechanical limit before fully settling.
+
+**Workaround:** Always allow ≥2000ms at EUD=0 before the next command. The app's
+smoothing (SMOOTH factor) may be sufficient in practice since it approaches limits
+gradually, but rapid programmatic sequences must respect this delay.
+
+**TODO:**
+- Confirm minimum safe settle time (2000ms sufficient, or more needed?)
+- Test whether EUD=100 has same issue at high rates
+- Test whether other hard stops (ELR=0/100, NE=0/100, NR=0/100, NT=0/100) are affected
