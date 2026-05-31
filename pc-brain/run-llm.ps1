@@ -26,19 +26,16 @@ param(
 $root      = $PSScriptRoot
 $modelsDir = Join-Path $root 'models'
 
-# llama-server binaries are a separate tool install (not Mabu data). Point this
-# elsewhere if yours lives somewhere else.
-$LlamaServerExe = 'C:\Users\user\Tools\llama-server\llama-server.exe'
+# llama-server binaries are a separate tool install (not Mabu data). Defaults
+# under your user profile; override with $env:LLAMA_SERVER_EXE.
+$LlamaServerExe = if ($env:LLAMA_SERVER_EXE) { $env:LLAMA_SERVER_EXE } `
+                  else { Join-Path $env:USERPROFILE 'Tools\llama-server\llama-server.exe' }
 
-# --- Model registry -------------------------------------------------------
-# name -> @{ Path; Template }. Template picks the chat format:
-#   ''       => trust the GGUF's embedded template via --jinja (Qwen etc.)
-#   'chatml' => force llama.cpp's built-in ChatML (some GGUFs ship a NAME like
-#               'mistral-v7-tekken' as their template string, which --jinja
-#               can't render -> garbage output; an explicit template fixes it).
-# Add a line here whenever you drop a new GGUF into pc-brain/models/.
-# Defined in models.json (shared with pipecat_bot.py) so file/template/stop
-# travel with each model. Add a model by adding an entry there.
+# --- Model registry (models.json, shared with pipecat_bot.py) --------------
+# Each entry: file (relative to pc-brain/models/, absolute, or with %ENV% vars),
+# template ('' => GGUF's embedded template via --jinja; 'chatml' => force a
+# built-in -- fixes GGUFs whose embedded template is a non-renderable NAME like
+# 'mistral-v7-tekken'), stop. Add a model by adding an entry there.
 $registryPath = Join-Path $root 'models.json'
 $registry = if (Test-Path $registryPath) { Get-Content $registryPath -Raw | ConvertFrom-Json } else { $null }
 $known = if ($registry) { $registry.PSObject.Properties.Name | Where-Object { $_ -ne '_comment' } } else { @() }
@@ -47,7 +44,8 @@ $known = if ($registry) { $registry.PSObject.Properties.Name | Where-Object { $_
 $template = ''
 if ($known -contains $Model) {
     $entry = $registry.$Model
-    $modelPath = if ([System.IO.Path]::IsPathRooted($entry.file)) { $entry.file } else { Join-Path $modelsDir $entry.file }
+    $file = [Environment]::ExpandEnvironmentVariables($entry.file)   # %USERPROFILE% etc.
+    $modelPath = if ([System.IO.Path]::IsPathRooted($file)) { $file } else { Join-Path $modelsDir $file }
     $template  = $entry.template
 } elseif (Test-Path $Model) {
     $modelPath = $Model

@@ -9,7 +9,7 @@
   },
 
   "qwen": {
-    "file": "C:\\Users\\user\\Tools\\downloads\\qwen2.5-7b-q4_k_m.gguf",
+    "file": "%USERPROFILE%\\Tools\\downloads\\qwen2.5-7b-q4_k_m.gguf",
     "template": "",
     "stop": ["<|im_end|>"],
     "note": "Qwen 2.5 7B Instruct. Embedded template is good (ChatML family) -> --jinja."
