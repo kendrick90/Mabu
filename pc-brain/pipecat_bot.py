@@ -86,8 +86,21 @@ class ChatterboxTTSService(TTSService):
     """Custom Pipecat TTS service that streams PCM from our Chatterbox server."""
 
     def __init__(self, base_url: str, sample_rate: int = 24000, voice_state=None, **kwargs):
-        super().__init__(sample_rate=sample_rate, **kwargs)
-        self._base_url = base_url.rstrip("/")
+        base_url = base_url.rstrip("/")
+        # Don't trust a hard-coded rate: ask the server for its real output rate
+        # (model.sr) so this auto-tracks a TTS model swap instead of silently
+        # playing at the wrong pitch. Falls back to the default if unreachable.
+        sr = sample_rate
+        try:
+            import json as _json
+            import urllib.request as _url
+            with _url.urlopen(f"{base_url}/health", timeout=5) as r:
+                sr = int(_json.load(r).get("sample_rate", sample_rate))
+        except Exception as e:
+            logger.warning(f"[chatterbox] /health rate probe failed ({e}); using {sample_rate}")
+        super().__init__(sample_rate=sr, **kwargs)
+        self._base_url = base_url
+        logger.info(f"[chatterbox] TTS output sample_rate={sr}")
         # Shared holder for the active persona's voice; PersonaControl updates it
         # on switch, we read it per request so each persona can sound different.
         self._voice_state = voice_state
