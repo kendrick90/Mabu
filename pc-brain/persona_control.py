@@ -33,11 +33,28 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-# Voice-clone capture window. We skip a lead-in (while Mabu's prompt is still
-# playing / the user gathers themselves), then keep CLONE_SECS of mic audio as
-# the reference clip Chatterbox clones from.
-CLONE_SKIP_SECS = 3.0
-CLONE_SECS = 8.0
+# Voice-clone capture is ENERGY-GATED, not a fixed window: we wait for the user
+# to actually start speaking (so the prompt length / a slow start don't matter),
+# keep audio while they talk, and stop once they've given enough speech AND gone
+# quiet -- so pauses and timing can't make us clone silence.
+CLONE_SPEECH_RMS = 350.0          # int16 RMS above this counts as speech
+CLONE_MIN_SPEECH_SECS = 3.0       # need at least this much speech for a clone
+CLONE_TRAIL_SILENCE_SECS = 1.2    # stop this long after they stop talking
+CLONE_MAX_SECS = 12.0             # hard cap on captured audio
+CLONE_START_TIMEOUT_SECS = 15.0   # give up if no speech is heard at all
+
+
+def _rms_int16(buf: bytes) -> float:
+    """RMS of little-endian int16 PCM, stdlib only (audioop is gone in 3.13)."""
+    import array
+    import math
+    if len(buf) < 2:
+        return 0.0
+    a = array.array("h")
+    a.frombytes(buf[: len(buf) - (len(buf) % 2)])
+    if not a:
+        return 0.0
+    return math.sqrt(sum(x * x for x in a) / len(a))
 
 DESIGNER_PROMPT = (
     "You are a warm, playful persona designer helping the user invent a new "
@@ -80,9 +97,11 @@ class PersonaControl(FrameProcessor):
         self._capturing = False
         self._clip = bytearray()
         self._clip_sr = None
-        self._clip_skip = 0
-        self._clip_target = 0
         self._clone_name = None
+        self._clone_started = False     # has the user begun speaking yet
+        self._clone_wait_secs = 0.0     # silence seen before speech started
+        self._clone_speech_secs = 0.0   # speech accumulated since start
+        self._clone_silence_secs = 0.0  # trailing silence since last speech
 
     def submit_command(self, cmd: dict):
         """Thread-safe: enqueue a control command (from the HTTP API thread)."""
@@ -124,13 +143,6 @@ class PersonaControl(FrameProcessor):
                 self._mgr.create(name, prompt)
                 if cmd.get("activate"):
                     await self._switch(self._ctx, self._mgr.slug(name), drop=False)
-        # Voice-clone capture state.
-        self._capturing = False
-        self._clip = bytearray()
-        self._clip_sr = None
-        self._clip_skip = 0
-        self._clip_target = 0
-        self._clone_name = None
 
     def _apply_voice(self, persona):
         if self._voice is not None:
@@ -147,9 +159,13 @@ class PersonaControl(FrameProcessor):
         # Voice-clone capture: buffer mic audio while still passing it through.
         if self._capturing and isinstance(frame, InputAudioRawFrame):
             await self.push_frame(frame, direction)
-            self._capture_chunk(frame)
-            if len(self._clip) >= self._clip_target:
+            status = self._capture_chunk(frame)   # None | "done" | "timeout"
+            if status == "done":
                 await self._finish_clone()
+            elif status == "timeout":
+                self._capturing = False
+                self._clip = bytearray()
+                await self._speak("I didn't catch your voice -- say 'clone my voice' to try again.")
             return
 
         if isinstance(frame, LLMContextFrame):
@@ -344,24 +360,64 @@ class PersonaControl(FrameProcessor):
         self._clone_name = name
         self._clip = bytearray()
         self._clip_sr = None
+        self._clone_started = False
+        self._clone_wait_secs = 0.0
+        self._clone_speech_secs = 0.0
+        self._clone_silence_secs = 0.0
         self._capturing = True
-        logger.info(f"[persona] cloning voice '{name}': capturing ~{CLONE_SECS:.0f}s of mic")
-        await self._speak("Okay! Right after I finish, talk to me for a few seconds and I'll learn your voice.")
+        logger.info(f"[persona] cloning voice '{name}': waiting for speech (energy-gated)")
+        await self._speak("Okay! Whenever you're ready, talk to me for a few seconds and I'll learn your voice.")
 
     def _capture_chunk(self, frame):
+        """Energy-gated capture. Returns None (keep going), 'done', or 'timeout'.
+
+        Waits for speech to start (skipping the prompt / lead-in regardless of
+        length), keeps audio while talking, and finishes once we have enough
+        speech AND a trailing pause -- so timing and mid-sentence pauses can't
+        make us clone silence."""
         if self._clip_sr is None:
             self._clip_sr = frame.sample_rate
-            self._clip_skip = int(self._clip_sr * 2 * CLONE_SKIP_SECS)
-            self._clip_target = self._clip_skip + int(self._clip_sr * 2 * CLONE_SECS)
-        self._clip.extend(frame.audio)
+        sr = self._clip_sr or 16000
+        audio = frame.audio
+        secs = (len(audio) / 2) / sr
+        is_speech = _rms_int16(audio) >= CLONE_SPEECH_RMS
+
+        if not self._clone_started:
+            if is_speech:
+                self._clone_started = True
+                self._clip.extend(audio)
+                self._clone_speech_secs = secs
+                self._clone_silence_secs = 0.0
+            else:
+                self._clone_wait_secs += secs
+                if self._clone_wait_secs >= CLONE_START_TIMEOUT_SECS:
+                    return "timeout"
+            return None
+
+        # Speaking has started: keep everything, track speech vs trailing silence.
+        self._clip.extend(audio)
+        if is_speech:
+            self._clone_speech_secs += secs
+            self._clone_silence_secs = 0.0
+        else:
+            self._clone_silence_secs += secs
+
+        total_secs = (len(self._clip) / 2) / sr
+        enough = self._clone_speech_secs >= CLONE_MIN_SPEECH_SECS
+        if enough and self._clone_silence_secs >= CLONE_TRAIL_SILENCE_SECS:
+            return "done"
+        if total_secs >= CLONE_MAX_SECS:
+            return "done"
+        return None
 
     async def _finish_clone(self):
         self._capturing = False
-        pcm = bytes(self._clip[self._clip_skip:])  # drop the lead-in
+        pcm = bytes(self._clip)   # already trimmed to speech onset
         sr = self._clip_sr or 16000
         name = self._clone_name
         self._clip = bytearray()
         self._clip_sr = None
+        logger.info(f"[persona] clone '{name}': {self._clone_speech_secs:.1f}s speech captured")
         slug = await self._upload_clone(name, pcm, sr)
         if not slug:
             await self._speak("Hmm, that didn't take. We can try the voice again later.")
