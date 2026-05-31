@@ -44,7 +44,9 @@ from persona_control import PersonaControl, VoiceState
 import control_server
 
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://localhost:8080/v1")
-LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5-7b-instruct")
+# Registry key (matches models.json + run-llm.ps1), also sent as the OpenAI
+# model name (cosmetic). Defaults to the active brain.
+LLM_MODEL = os.environ.get("LLM_MODEL", "rocinante")
 CHATTERBOX_URL = os.environ.get("CHATTERBOX_URL", "http://localhost:8123")
 TTS_SAMPLE_RATE = int(os.environ.get("TTS_SAMPLE_RATE", "24000"))
 # Streaming STT backend (Option 1): the existing WhisperLive WS server. Loopback
@@ -54,6 +56,23 @@ WHISPERLIVE_URL = os.environ.get("WHISPERLIVE_URL", "ws://localhost:9090")
 PERSONAS_DIR = os.environ.get(
     "PERSONAS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "personas")
 )
+
+
+def _model_stop(model_name: str) -> list:
+    """Per-model stop sequences from models.json (shared with run-llm.ps1), so
+    the right stop travels with each model instead of being hard-coded. Falls
+    back to ChatML's <|im_end|> (both current models are ChatML)."""
+    try:
+        import json
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.json")
+        with open(path, encoding="utf-8") as f:
+            entry = json.load(f).get(model_name) or {}
+        stop = entry.get("stop")
+        if stop:
+            return stop
+    except Exception as e:
+        logger.warning(f"[models] stop lookup failed for {model_name!r}: {e}")
+    return ["<|im_end|>"]
 
 MABU_PERSONA = (
     "You are Mabu, a small yellow social robot watching the user from a tabletop. "
@@ -143,18 +162,17 @@ async def run_pipeline(transport):
     # Streaming STT via WhisperLive (partials + finals), replacing the segmented
     # in-process WhisperSTTService. Pipecat VAD/SmartTurn still own turn-taking.
     stt = WhisperLiveSTTService(url=WHISPERLIVE_URL, model="large-v3-turbo", language="en")
-    # stop on "<|im_end|>": with the forced ChatML template, Nemo-based models
-    # (Rocinante) emit the literal "<|im_end|>" as text instead of halting (the
-    # token isn't native to their tokenizer), so it leaked into the TTS. llama-
-    # server honours the OpenAI `stop` param. Harmless for Qwen (also ChatML).
-    # Temperature 0.8 suits the RP/character model.
+    # Per-model stop sequences from models.json (e.g. Nemo/Rocinante under forced
+    # ChatML leaks a literal "<|im_end|>" that llama-server's `stop` param trims).
+    # Travels with the model instead of being hard-coded. Temperature 0.8 for RP.
+    stop = _model_stop(LLM_MODEL)
     llm = OpenAILLMService(
         base_url=LLAMA_URL,
         api_key="local",
         model=LLM_MODEL,
         params=OpenAILLMService.InputParams(
             temperature=0.8,
-            extra={"stop": ["<|im_end|>"]},
+            extra={"stop": stop},
         ),
     )
     # In Pipecat 1.x, VAD / user-turn detection lives on the USER AGGREGATOR, not
@@ -190,7 +208,7 @@ async def run_pipeline(transport):
     )
     persona_ctl = PersonaControl(
         personas, LLAMA_URL, chatterbox_url=CHATTERBOX_URL,
-        stop_tokens=["<|im_end|>"], voice_state=voice_state, context=context,
+        stop_tokens=stop, voice_state=voice_state, context=context,
     )
 
     # Programmatic control + status API (see/switch personas & voices without

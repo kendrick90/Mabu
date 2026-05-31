@@ -37,27 +37,23 @@ $LlamaServerExe = 'C:\Users\user\Tools\llama-server\llama-server.exe'
 #               'mistral-v7-tekken' as their template string, which --jinja
 #               can't render -> garbage output; an explicit template fixes it).
 # Add a line here whenever you drop a new GGUF into pc-brain/models/.
-$registry = @{
-    # Decensored RP / adventure brain (TheDrummer, Mistral-Nemo 12B). The pick
-    # TTRPG / character-roleplay users reach for; refusals removed. Its card
-    # recommends "ChatML for RP", and its embedded template won't render, so
-    # we force ChatML explicitly.
-    'rocinante' = @{ Path = (Join-Path $modelsDir 'Rocinante-12B-v1.1-Q4_K_M.gguf'); Template = 'chatml' }
-    # Original safe assistant model. Embedded Qwen template is good -> --jinja.
-    # Still on the old Tools path; move it into pc-brain/models/ to consolidate.
-    'qwen'      = @{ Path = 'C:\Users\user\Tools\downloads\qwen2.5-7b-q4_k_m.gguf'; Template = '' }
-}
+# Defined in models.json (shared with pipecat_bot.py) so file/template/stop
+# travel with each model. Add a model by adding an entry there.
+$registryPath = Join-Path $root 'models.json'
+$registry = if (Test-Path $registryPath) { Get-Content $registryPath -Raw | ConvertFrom-Json } else { $null }
+$known = if ($registry) { $registry.PSObject.Properties.Name | Where-Object { $_ -ne '_comment' } } else { @() }
 
 # Resolve: a registry name first, otherwise treat $Model as a literal path.
 $template = ''
-if ($registry.ContainsKey($Model)) {
-    $modelPath = $registry[$Model].Path
-    $template  = $registry[$Model].Template
+if ($known -contains $Model) {
+    $entry = $registry.$Model
+    $modelPath = if ([System.IO.Path]::IsPathRooted($entry.file)) { $entry.file } else { Join-Path $modelsDir $entry.file }
+    $template  = $entry.template
 } elseif (Test-Path $Model) {
     $modelPath = $Model
 } else {
     Write-Host "Unknown model '$Model'." -ForegroundColor Red
-    Write-Host "Known names: $($registry.Keys -join ', ')  (or pass a .gguf path)" -ForegroundColor Yellow
+    Write-Host "Known names: $($known -join ', ')  (or pass a .gguf path)" -ForegroundColor Yellow
     exit 1
 }
 

@@ -24,9 +24,10 @@ try {
 $env:CUDA_VISIBLE_DEVICES = "0"
 $env:LLAMA_URL      = "http://localhost:8080/v1"
 $env:CHATTERBOX_URL = "http://localhost:8123"
-# Default LLM model label (llama-server serves whatever GGUF is loaded; the
-# name is mostly cosmetic for the OpenAI-compatible request).
-$env:LLM_MODEL      = "qwen2.5-7b-instruct"
+# LLM registry key (matches models.json) -- selects the per-model stop tokens
+# and is the OpenAI model name. run-all.ps1 sets this to the launched model;
+# only default it here if not already set so the two stay in sync.
+if (-not $env:LLM_MODEL) { $env:LLM_MODEL = "rocinante" }
 
 $port = if ($args.Count -ge 1) { $args[0] } else { 7860 }
 

@@ -43,6 +43,9 @@ function Start-Svc([string]$script, [object[]]$svcArgs, [int]$port, [string]$nam
 }
 
 Write-Host "=== Launching Mabu brain stack (LLM=$Model) ===" -ForegroundColor Cyan
+# Propagate the chosen model to the pipecat bot (inherited by its child window)
+# so its per-model stop tokens match what llama-server actually loaded.
+$env:LLM_MODEL = $Model
 Start-Svc 'run-llm.ps1'         @($Model) 8080 "llama-server [$Model]"
 Start-Svc 'run-whisperlive.ps1' @()       9090 'WhisperLive STT'
 Start-Svc 'run-chatterbox.ps1'  @()       8123 'Chatterbox TTS'
