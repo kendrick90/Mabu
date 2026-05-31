@@ -100,16 +100,17 @@ class WhisperLiveSTTService(STTService):
             self._ws = None
             return
 
+        # Only the identity/mode params -- uid (the server keys + filters clients
+        # by it), language, transcribe mode, and which model to load. Everything
+        # else (use_vad, no_speech_thresh, send_last_n_segments, clip_audio,
+        # same_output_threshold) is left to the server's own defaults rather than
+        # copying RemoteAsr's device-tuned values -- Pipecat VAD/SmartTurn own
+        # turn timing here, so those knobs aren't ours to set.
         config = {
             "uid": self._uid,
             "language": self._language,
             "task": "transcribe",
             "model": self._model,
-            "use_vad": True,
-            "send_last_n_segments": 10,
-            "no_speech_thresh": 0.45,
-            "clip_audio": False,
-            "same_output_threshold": 5,
         }
         if self._hotwords:
             config["hotwords"] = self._hotwords
