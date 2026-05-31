@@ -254,6 +254,22 @@ class PersonaControl(FrameProcessor):
             await self._start_clone(ctx, name)
             return True
 
+        # list available voices: "what voices do you have", "list your voices"
+        if re.search(r"\b(what|which|list|name)\b.{0,16}\bvoices?\b", low):
+            self._drop_command(ctx)
+            voices = await self._list_voices()
+            await self._speak("My voices are: " + self._join(voices) + ".")
+            return True
+
+        # back to the built-in voice: "use your own/normal/original/default voice",
+        # "go back to your normal voice", "stop using my voice", "be yourself".
+        if (re.search(r"\b(own|normal|original|default|real|regular|usual|built.?in)\b.{0,14}\bvoice\b", low)
+                or re.search(r"\bstop\b.{0,24}\b(using|cloning|copying|imitating|mimicking)\b.{0,14}\bvoice\b", low)
+                or re.search(r"\bbe yourself\b", low)
+                or re.search(r"\breset\b.{0,14}\bvoice\b", low)):
+            await self._assign_voice(ctx, "default")
+            return True
+
         # use an existing voice on the current persona: "use the <name> voice"
         m = re.search(r"\buse (?:the )?(?P<name>[a-z0-9 '\-]+?) voice$", low)
         if m:
@@ -430,7 +446,7 @@ class PersonaControl(FrameProcessor):
             self._mgr.save(p)
             self._apply_voice(p)
         logger.info(f"[persona] cloned + applied voice '{slug}' to persona '{active}'")
-        await self._speak("Got it -- this is how I sound now. What do you think?")
+        await self._speak("Got it -- this is how I sound now. Say 'use your own voice' to switch back.")
 
     async def _upload_clone(self, name, pcm, sr):
         buf = io.BytesIO()
@@ -454,17 +470,53 @@ class PersonaControl(FrameProcessor):
             logger.warning(f"[persona] clone upload failed: {e}")
             return None
 
+    # Words that mean "Mabu's built-in voice", not a named clone.
+    _DEFAULT_VOICE_WORDS = {
+        "default", "original", "normal", "own", "real", "regular", "usual",
+        "builtin", "built-in", "your own", "my own", "your", "none",
+    }
+
     async def _assign_voice(self, ctx, voice_name, drop=True):
         if drop:
             self._drop_command(ctx)
-        slug = self._mgr.slug(voice_name)
+        raw = (voice_name or "").strip().lower()
+        to_default = raw in self._DEFAULT_VOICE_WORDS
+        slug = "default" if to_default else self._mgr.slug(voice_name)
+
+        # Validate named voices against what Chatterbox actually has, so unknown
+        # names give feedback instead of silently falling back to default.
+        if slug != "default":
+            voices = await self._list_voices()
+            if slug not in voices:
+                await self._speak(
+                    f"I don't have a voice called {voice_name}. My voices are: "
+                    + self._join(voices) + "."
+                )
+                return
+
         active = self._mgr.active_name()
         p = self._mgr.get(active)
         if p:
-            p["voice"] = slug
+            p["voice"] = None if to_default else slug   # None => built-in voice
             self._mgr.save(p)
             self._apply_voice(p)
-        await self._speak(f"Okay, using the {voice_name} voice.")
+        logger.info(f"[persona] voice -> {'default' if to_default else slug} on '{active}'")
+        if to_default:
+            await self._speak("Okay, back to my own voice.")
+        else:
+            await self._speak(f"Okay, using the {voice_name} voice.")
+
+    async def _list_voices(self):
+        """Voices Chatterbox actually has ('default' + any clones)."""
+        try:
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as s:
+                async with s.get(f"{self._chatterbox_url}/voices") as r:
+                    d = await r.json()
+                    return d.get("voices", ["default"])
+        except Exception as e:
+            logger.warning(f"[persona] voice list failed: {e}")
+            return ["default"]
 
     @staticmethod
     def _join(names):
