@@ -47,6 +47,10 @@ class PipecatVoice(
         fun onConnected() {}
         /** Session torn down (graceful disconnect or peer left). */
         fun onDisconnected() {}
+        /** Underlying transport state changed (Connecting/Connected/Ready/
+         *  Disconnected). Use this for accurate status -- onConnected fires once
+         *  but doesn't tell you if the brain later went away. */
+        fun onConnectionState(state: TransportState) {}
         /** A transcript of the user's speech. [isFinal] false = interim. */
         fun onUserTranscript(text: String, isFinal: Boolean) {}
         fun onUserStartedSpeaking() {}
@@ -71,6 +75,7 @@ class PipecatVoice(
 
         override fun onTransportStateChanged(state: TransportState) {
             Log.i(TAG, "transport state: $state")
+            listener.onConnectionState(state)
         }
 
         override fun onBotReady(data: BotReadyData) {

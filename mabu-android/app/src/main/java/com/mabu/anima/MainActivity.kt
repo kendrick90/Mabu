@@ -38,6 +38,11 @@ class MainActivity : AppCompatActivity() {
     private var remoteAsr: RemoteAsr? = null
     private var remoteTts: RemoteTts? = null
     private var pipecatVoice: PipecatVoice? = null
+    // Pipecat status tracking, so the mic line reflects REALITY (not just "mic on").
+    @Volatile private var pipecatReachable = false      // bot TCP port answering
+    @Volatile private var pipecatSessionDead = false    // dropped after connecting -> needs restart
+    private var pipecatState: ai.pipecat.client.types.TransportState? = null
+    private var botSpeaking = false
     private lateinit var micButton: TextView
     private var muteButton: TextView? = null
 
@@ -431,22 +436,31 @@ class MainActivity : AppCompatActivity() {
             enableMic = !manualMute,
             listener = object : PipecatVoice.Listener {
                 override fun onConnected() {
-                    micButton.text = if (manualMute) "🔇 muted" else "🎤 listening…"
+                    pipecatReachable = true
+                    updatePipecatStatus()
                 }
                 override fun onDisconnected() {
-                    micButton.text = "⚠ brain offline"
+                    pipecatSessionDead = true        // WebRTC session gone -> needs restart
                     overlayView.setHeardText(null)
+                    updatePipecatStatus()
+                }
+                override fun onConnectionState(state: ai.pipecat.client.types.TransportState) {
+                    pipecatState = state
+                    if (state == ai.pipecat.client.types.TransportState.Ready) pipecatReachable = true
+                    updatePipecatStatus()
                 }
                 override fun onUserTranscript(text: String, isFinal: Boolean) {
                     if (manualMute) return
                     overlayView.setHeardText(text)   // speech bubble by the face
                 }
                 override fun onBotStartedSpeaking() {
-                    micButton.text = "🔊 speaking…"
+                    botSpeaking = true
+                    updatePipecatStatus()
                 }
                 override fun onBotStoppedSpeaking() {
-                    micButton.text = if (manualMute) "🔇 muted" else "🎤 listening…"
+                    botSpeaking = false
                     overlayView.setHeardText(null)   // clear the bubble after a turn
+                    updatePipecatStatus()
                 }
                 override fun onServerMessage(data: ai.pipecat.client.types.Value) {
                     // PC->device control channel for agentic tools (set_mode,
@@ -462,8 +476,56 @@ class MainActivity : AppCompatActivity() {
         pipecatVoice = voice
         voice.connect()
         Log.i(TAG, "pipecat mode: connecting to ${tuning.pipecatOfferUrl}")
-        micButton.text = "🎤 connecting…"
+        updatePipecatStatus()
+        handler.removeCallbacks(pipecatHealthPoll)
+        handler.post(pipecatHealthPoll)
     }
+
+    /** Single source of truth for the pipecat status line. Reflects whether the
+     *  brain is actually reachable + the live session state -- not just "mic on". */
+    private fun updatePipecatStatus() {
+        if (tuning.cognitionMode != "pipecat") return
+        micButton.text = when {
+            pipecatSessionDead -> "⚠ brain offline — restart"
+            !pipecatReachable && pipecatState == null -> "🔌 connecting…"   // startup, pre-probe
+            !pipecatReachable -> "⚠ brain offline"
+            manualMute -> "🔇 muted"
+            botSpeaking -> "🔊 speaking…"
+            pipecatState == ai.pipecat.client.types.TransportState.Ready -> "🎤 listening…"
+            else -> "🔌 connecting…"
+        }
+    }
+
+    /** Liveness probe: a silently-killed bot doesn't always surface as a WebRTC
+     *  disconnect, so poll the bot's TCP port and reflect reachability. Reschedules
+     *  itself every few seconds; stopped by onDestroy's removeCallbacksAndMessages. */
+    private val pipecatHealthPoll = object : Runnable {
+        override fun run() {
+            val hp = parseHostPort(tuning.pipecatOfferUrl)
+            if (hp != null) {
+                Thread {
+                    val ok = try {
+                        java.net.Socket().use {
+                            it.connect(java.net.InetSocketAddress(hp.first, hp.second), 1500); true
+                        }
+                    } catch (_: Throwable) { false }
+                    handler.post {
+                        val was = pipecatReachable
+                        pipecatReachable = ok
+                        if (was && !ok) pipecatSessionDead = true   // was up, now gone
+                        updatePipecatStatus()
+                    }
+                }.start()
+            }
+            handler.postDelayed(this, 4000)
+        }
+    }
+
+    private fun parseHostPort(url: String): Pair<String, Int>? = try {
+        val u = java.net.URI(url)
+        val port = if (u.port > 0) u.port else if (u.scheme == "https") 443 else 80
+        if (u.host != null) Pair(u.host, port) else null
+    } catch (_: Throwable) { null }
 
     /**
      * Register a debug broadcast receiver so the app is fully drivable over
@@ -997,7 +1059,8 @@ class MainActivity : AppCompatActivity() {
             manualMute = !manualMute
             voice.setMuted(manualMute)
             if (manualMute) overlayView.setHeardText(null)
-            updateMuteUi(manualMute)
+            muteButton?.text = if (manualMute) "🔇" else "🎤"
+            updatePipecatStatus()
             return
         }
         if (remoteAsr == null) return
