@@ -23,7 +23,14 @@ from loguru import logger
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import TTSAudioRawFrame, TTSStartedFrame, TTSStoppedFrame
+from pipecat.frames.frames import (
+    Frame,
+    InputImageRawFrame,
+    TTSAudioRawFrame,
+    TTSStartedFrame,
+    TTSStoppedFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -37,6 +44,12 @@ from pipecat.runner.utils import create_transport
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.tts_service import TTSService
 from pipecat.transports.base_transport import TransportParams
+from pipecat.utils.text.base_text_aggregator import (
+    Aggregation,
+    AggregationType,
+    BaseTextAggregator,
+)
+from pipecat.utils.string import match_endofsentence
 
 from whisperlive_stt import WhisperLiveSTTService
 from persona_manager import PersonaManager
@@ -99,6 +112,60 @@ def clean_for_speech(text: str) -> str:
     t = _NAME_RE.sub("", t)
     t = t.replace("*", " ")
     return re.sub(r"\s+", " ", t).strip()
+
+
+class MinLengthTextAggregator(BaseTextAggregator):
+    """Batch LLM text into >= min_chars chunks at sentence boundaries before TTS.
+
+    Chatterbox takes ~1.3 s to synthesize a chunk regardless of its length, so a
+    tiny sentence ("Ooh!") finishes PLAYING before the next one finishes
+    SYNTHESIZING -> audible gaps / choppiness. Batching short sentences into a
+    bigger chunk yields audio long enough to cover the next synth = smooth.
+    Sentences already >= min_chars pass straight through (no added latency); only
+    short ones get combined. flush() emits the tail at end of turn."""
+
+    def __init__(self, min_chars: int = 80, **kwargs):
+        super().__init__(**kwargs)
+        self._min = min_chars
+        self._buf = ""
+
+    @property
+    def text(self) -> Aggregation:
+        return Aggregation(text=self._buf.strip(" "), type=AggregationType.SENTENCE)
+
+    @staticmethod
+    def _last_sentence_end(s: str):
+        """Index just past the LAST sentence-ending in s, or None."""
+        pos, last = 0, None
+        while True:
+            m = match_endofsentence(s[pos:])
+            if not m:
+                break
+            pos += m
+            last = pos
+        return last
+
+    async def aggregate(self, text: str):
+        self._buf += text
+        while len(self._buf) >= self._min:
+            cut = self._last_sentence_end(self._buf)
+            if cut is None:
+                break  # no sentence boundary yet -- keep buffering, don't cut mid-sentence
+            chunk = self._buf[:cut].strip(" ")
+            self._buf = self._buf[cut:].lstrip(" ")
+            if chunk:
+                yield Aggregation(text=chunk, type=AggregationType.SENTENCE)
+
+    async def flush(self):
+        chunk = self._buf.strip(" ")
+        self._buf = ""
+        return Aggregation(text=chunk, type=AggregationType.SENTENCE) if chunk else None
+
+    async def handle_interruption(self):
+        self._buf = ""
+
+    async def reset(self):
+        self._buf = ""
 
 
 class ChatterboxTTSService(TTSService):
@@ -200,6 +267,10 @@ async def run_pipeline(transport):
     tts = ChatterboxTTSService(
         base_url=CHATTERBOX_URL, sample_rate=TTS_SAMPLE_RATE, voice_state=voice_state
     )
+    # Batch short sentences before synth so Chatterbox produces audio chunks long
+    # enough to cover the next chunk's synth time -> no choppiness between tiny
+    # sentences. Replaces the default per-sentence aggregator.
+    tts._text_aggregator = MinLengthTextAggregator(min_chars=80)
 
     context = LLMContext(seed)
     aggregators = LLMContextAggregatorPair(
@@ -221,6 +292,7 @@ async def run_pipeline(transport):
 
     pipeline = Pipeline([
         transport.input(),
+        VideoFrameLogger(),   # smoke-test counter; logs incoming video frames
         stt,
         aggregators.user(),
         persona_ctl,          # intercepts persona commands before the LLM
@@ -236,11 +308,35 @@ async def run_pipeline(transport):
     await runner.run(task)
 
 
+class VideoFrameLogger(FrameProcessor):
+    """Smoke-test pass-through. Counts incoming video frames and logs one line
+    per second so we can confirm the device->brain video track actually flows."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._frames = 0
+        self._last_log = 0.0
+        self._last_size = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InputImageRawFrame):
+            self._frames += 1
+            self._last_size = frame.size
+            import time
+            now = time.monotonic()
+            if now - self._last_log >= 1.0:
+                logger.info(f"video: {self._frames} frames received, last size {self._last_size}")
+                self._last_log = now
+        await self.push_frame(frame, direction)
+
+
 async def bot(runner_args):
     transport_params = {
         "webrtc": lambda: TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            video_in_enabled=True,
             vad_analyzer=SileroVADAnalyzer(),
             turn_analyzer=LocalSmartTurnAnalyzerV3(),
         ),
