@@ -22,7 +22,15 @@ climbs over a session until the GPU re-maxes -> dropped/slow responses + the
 "loading/unloading" feel. The 8B bought headroom (~5 reconnects of slack) but
 does NOT eliminate it.
 
-**Fix candidates (next):**
+**FIXED (2026-05-31):** root cause was `server.run()` only enabling `single_model`
+when a *custom model path* is passed; with the client-chosen model it stayed off,
+so every connection loaded its own ~1.4 GB model and never freed it. `run-whisperlive.ps1`
+now launches with `-fw mobiuslabsgmbh/faster-whisper-large-v3-turbo` (the same turbo
+weights, already cached) → `single_model` shares ONE model. Verified: 4 sequential
+connections held VRAM flat (8838→8780 MiB free; pre-fix would've dropped ~1.4 GB each).
+Reconnects no longer grow VRAM.
+
+**Earlier fix candidates (now moot, kept for context):**
 1. Verify `single_model` actually shares the model for faster_whisper (check the
    server's startup log / add `-sm`); if not effective, patch the server to free
    per-client resources + `torch.cuda.empty_cache()` on disconnect.

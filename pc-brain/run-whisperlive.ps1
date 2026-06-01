@@ -36,7 +36,16 @@ try {
     # --max_connection_time: WhisperLive defaults to 300s and then disconnects
     #   the client. Mabu holds one long-lived always-on connection, so bump it
     #   way up (24h) -- otherwise the session drops every 5 minutes.
-    & $py run_server.py --port $port --backend faster_whisper --raw_pcm_input --max_connection_time 86400 2>&1 |
+    # -fw <hf-id>: pin the model as a "custom model". This is REQUIRED to enable
+    #   single_model sharing -- server.run() only sets single_model when a custom
+    #   model path is given; otherwise it loads a FRESH ~1.4 GB model per client
+    #   connection and never frees it on disconnect (VRAM leak: each reconnect
+    #   grows VRAM until the GPU maxes -> dropped/slow responses). With this, all
+    #   clients share ONE model. It's the same turbo weights large-v3-turbo maps
+    #   to, already cached, so no download (HF_HUB_OFFLINE above).
+    & $py run_server.py --port $port --backend faster_whisper --raw_pcm_input `
+        --max_connection_time 86400 `
+        -fw mobiuslabsgmbh/faster-whisper-large-v3-turbo 2>&1 |
         ForEach-Object { "$_" }
 } finally {
     Pop-Location
