@@ -17,3 +17,6 @@ personas/
 # Cloned/reference voice clips for Chatterbox (runtime).
 voices/
 voice.wav
+
+# Benchmark audio clips (bench.py).
+bench_clips/
