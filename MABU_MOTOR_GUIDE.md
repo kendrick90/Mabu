@@ -106,12 +106,6 @@ ready to receive.
 ### Wait ~500 ms after power-on before sending movement commands
 (only applies once the board is already awake — not for the cold-boot sequence above)
 
-### All-motors center frame (pre-computed)
-```
-FA 00 0A 01 7F 01 40 40 80 80 40 <NR_wire> <NT_wire> <s2> <s1>
-```
-Recompute checksum if NR_NEUTRAL or NT_NEUTRAL changes.
-
 ---
 
 ## 4. Neutral Positions (This Unit — Visually confirmed 2026-05-29)
@@ -185,23 +179,79 @@ adb shell "nohup sh /data/local/tmp/motor-bridge.sh > /data/local/tmp/motor-brid
 adb shell "busybox netstat -tlnp | grep 7777"
 ```
 
-### Full startup sequence (every reboot)
-```
-1. adb connect 192.168.0.180:5555
-2. adb shell "nohup sh /data/local/tmp/motor-bridge.sh > /data/local/tmp/motor-bridge.log 2>&1 &"
-3. Wait 3 s — verify port 7777 is LISTEN
-4. adb shell "am force-stop com.mabu.facetrack"
-5. Wait 2 s
-6. adb shell "am start -n com.mabu.facetrack/.MainActivity"
-```
-The app auto-starts at boot before the bridge is ready, so force-stop + restart is mandatory.
-
 ### Stop the app before manual testing
-**CRITICAL for manual testing sessions:** The MabuFaceTrack app auto-starts at boot and sends motor commands continuously. If it is running while you send test commands, motors will fight between two senders and oscillate. Always force-stop it before any manual test:
+
+**CRITICAL:** The app sends motor commands continuously while tracking. Neutralize it before any
+manual test or it will contend for the bridge slot and cause short-write storms.
+
+**Preferred method — PAUSE tracking (app stays alive but silent):**
 ```bash
-adb shell "am force-stop com.mabu.facetrack"
+adb shell "am broadcast -a com.mabu.facetrack.PAUSE_TRACKING --ez paused true -p com.mabu.facetrack"
 ```
-Note: force-stopping the app also kills the bridge (same process group). Restart the bridge after.
+
+**If a full restart is needed:** force-stop kills the bridge too — always restart the bridge AFTER
+the app, never before. See "Clean motor-control establishment / re-establishment" below.
+
+### Clean motor-control establishment / re-establishment (verified 2026-05-31)
+
+The proven, repeatable sequence for taking reliable manual control. Verified twice back-to-back
+(head full-left, then full-right) with 0 short writes each time.
+
+**Key facts that drive the ordering:**
+- Force-stopping the app **also takes the bridge down**, so always (re)start the bridge AFTER you
+  have dealt with the app, never before.
+- The app is the HOME launcher: force-stop relaunches it with tracking ACTIVE, and on startup its
+  `MabuMotors.open()` connects to the bridge once (you'll see a brief `127.0.0.1:7777` connection,
+  then `FIN_WAIT2`). Pause its tracking so it stops sending and can't contend for the slot.
+- One sender at a time. Single-frame commands relay cleanly. The old `nc: short write` storms were
+  a symptom of a hung motor board (clears on power-cycle) plus app contention - not a relay bug.
+
+**Procedure (after an app restart, or any time you need to (re)establish control):**
+```bash
+A="/path/to/adb"   # e.g. "X:/Claude/android platform-tools/adb.exe"
+
+# 1. (Optional) completely restart the app. This ALSO kills the bridge.
+$A shell "am force-stop com.mabu.facetrack"; sleep 2
+$A shell "am start -n com.mabu.facetrack/.MainActivity"
+
+# 2. Pause the app so it can't contend for the bridge slot.
+$A shell "am broadcast -a com.mabu.facetrack.PAUSE_TRACKING --ez paused true -p com.mabu.facetrack"
+
+# 3. Kill any stray bridge/nc, then start exactly ONE bridge.
+$A shell 'for p in /proc/[0-9]*; do c=$(cat $p/cmdline 2>/dev/null | tr "\0" " ");
+  case "$c" in *cmdline*) continue;; esac;
+  case "$c" in *motor-bridge.sh*|*"nc -l -p 7777"*) kill ${p#/proc/} 2>/dev/null;; esac; done'
+$A shell "nohup sh /data/local/tmp/motor-bridge.sh >/dev/null 2>&1 &"
+sleep 3
+
+# 4. Verify the slot is clean BEFORE sending.
+$A shell "busybox netstat -tlnp | busybox grep 7777"                          # must show LISTEN
+$A shell "busybox netstat -tn | busybox grep 7777 | busybox grep ESTABLISHED" # must show nothing
+
+# 5. Send your command as a SINGLE frame over one connection (reliable loopback form):
+$A shell "busybox printf '<frame-hex>' | busybox timeout -t 3 busybox nc 127.0.0.1 7777"
+```
+
+**Confirm the move WITHOUT a camera (telemetry):** capture the board's position reports around the
+send and read the target motor's byte.
+```bash
+# start capture, send at ~1s, wait for capture to finish
+$A shell 'busybox timeout -t 6 cat /dev/ttyS1 > /data/local/tmp/mv.bin 2>/dev/null &
+  sleep 1; busybox printf "<frame-hex>" | busybox timeout -t 3 busybox nc 127.0.0.1 7777; wait'
+$A shell "busybox hexdump -C /data/local/tmp/mv.bin | busybox head -4; busybox hexdump -C /data/local/tmp/mv.bin | busybox tail -4"
+```
+In each `FA 00 09 01 00 ..` position frame the 7 motor bytes are `LDL LDR ELR EUD NE NR NT` at
+frame offsets 5..11. A clean move shows the target byte ramp to the commanded wire value, and the
+bridge log gains 0 new `short write` lines. (To pull the capture to the PC, prefix the adb command
+with `MSYS_NO_PATHCONV=1`.)
+
+**Single-motor frame cheat sheet:** `FA 00 04 01 <mask> 01 <wire> <s2> <s1>`. Examples verified on
+hardware 2026-05-31:
+| Command | Effect | Frame |
+|---|---|---|
+| NR=100 | head full LEFT  | `FA 00 04 01 02 01 FF FC 03` |
+| NR=0   | head full RIGHT | `FA 00 04 01 02 01 00 FC 03` |
+| ELR=80 | eyes right      | `FA 00 04 01 10 01 CC F3 DD` |
 
 ### Critical bridge rules
 - **NEVER start the bridge twice.** A second instance opens `/dev/ttyS1` again, resetting
@@ -237,6 +287,54 @@ adb shell "busybox printf '\xFA\x00\x0A...' | nc 127.0.0.1 7777"
 `busybox printf` supports `\xNN` hex escapes. `nc` closes when stdin (printf) exits.
 Use `127.0.0.1` (loopback) not `192.168.0.180` to avoid external routing.
 
+### Connection failures and the `nc: short write` storm (investigated 2026-05-31)
+
+**Symptom:** a PC TCP client to port 7777 fails mid-burst with "An established connection
+was aborted by the software in your host machine." The bridge log shows repeated
+`nc: short write` immediately followed by `Client disconnected, listening again`.
+
+**Mechanism:** busybox nc (v1.22.1 on this unit) relays socket bytes to `/dev/ttyS1` (fd3).
+When that serial `write()` returns fewer bytes than asked (a short write), this build treats it
+as FATAL and EXITS, tearing down the TCP connection. The PC side then sees the abort. The app
+makes it worse: on any write failure it immediately reconnects (MabuMotors.kt re-`tryConnect`s in
+its `writeFrame` catch), so the cycle becomes a self-reinforcing storm.
+
+**Confirmed NOT the cause (ruled out 2026-05-31, tested one variable at a time):**
+- *Bridge stdout polluting the motor wire (refuted).* `/proc/<bridge-pid>/fd/1` shows
+  `-> /dev/ttyS1`, which looks alarming, but it is a TRANSIENT mksh artifact: the loop's
+  `nc -l -p 7777 >&3` borrows the parent shell's fd1 onto fd3 for the duration of the (blocking)
+  nc, then restores it. Proof: every `log()` line ("Bridge starting", "Client disconnected")
+  lands in the LOGFILE, not on the wire. The bridge never sprays ASCII onto `/dev/ttyS1`.
+  Hardening the script with `exec 1>>"$LOG" 2>&1` did not change this (fd1 still reads as ttyS1
+  in a /proc snapshot because of the transient borrow).
+- *busybox nc being inherently unfit for a single relay (refuted).* A clean single relayed write
+  - one client, one 7-byte power-on via loopback, no app connected, no concurrent reader -
+  produced ZERO short writes. The relay works fine in isolation.
+
+**Actual trigger: contention on the single-client bridge slot.** The bridge serves ONE client at
+a time. The app is the HOME launcher (auto-restarts on force-stop) and reconnects on every write
+failure, so when it is tracking-active it hammers port 7777; combined with a PC client or any
+churn, nc short-writes and the storm sustains.
+
+**Rule:** before ANY manual testing, neutralize the app so it cannot contend for the slot - pause
+tracking via the `PAUSE_TRACKING` broadcast (or force-stop, though it relaunches as launcher).
+Verify `busybox netstat -tn | grep 7777` shows NO established client before sending. One sender
+at a time.
+
+### Hardened bridge (deployed 2026-05-31)
+The on-device `/data/local/tmp/motor-bridge.sh` now adds, vs the original: `exec 1>>"$LOG" 2>&1`
+at the top (force log output to the file) and `clocal` in the stty (so a fresh fd3 open does not
+block on carrier). These are hygiene improvements; they do NOT fix the short-write storm - the fix
+for that is removing app/sender contention (above). Local copy: `X:\Claude\Mabu\motor-bridge-hardened.sh`.
+
+### Environment gotchas found this session
+- **`adb push` path mangling.** `adb push <local> /data/local/tmp/...` from the Bash tool (Git
+  Bash / MSYS) rewrites the device path into `C:/Program Files/Git/data/local/tmp/...` and fails
+  with `remote secure_mkdirs failed: No such file or directory`. Prefix the command with
+  `MSYS_NO_PATHCONV=1` to disable the conversion. (PowerShell does not have this problem.)
+- **WiFi ADB drops mid-command** ("error: closed" or "device offline"). Recover with
+  `adb disconnect 192.168.0.180:5555 && adb connect 192.168.0.180:5555`; may take 2-3 tries.
+
 ---
 
 ## 8. CSV Animation Format
@@ -260,14 +358,15 @@ Wire value from CSV: `wire = clamp(int(round(csv_value + 128)), 0, 255)`
 
 ## 10. Known Issues / Gotchas Checklist
 
+- [ ] **ASCII only in PowerShell scripts (.ps1).** NEVER use em-dashes (or any non-ASCII char) in a `.ps1` file. PowerShell 5.1 reads a UTF-8-without-BOM file as Windows-1252, so an em-dash's third byte `0x94` becomes a curly double-quote that silently terminates/reopens strings and desyncs the whole parse (cascading "Unexpected token" errors far from the real line). Use `-` or `--` instead. If a script must contain non-ASCII, save it with a UTF-8 BOM. This has bitten us multiple times.
+
+- [ ] **Command-latch: distinguish two states (Section 11).** STIFF + MUTE (zero telemetry) = hung MCU → power-cycle likely helps. STIFF + heartbeat-only + commands ignored = State B → **use direct exec+stty recovery (Section 11), NOT the bridge**. Power-cycle is not needed for State B. Read telemetry first.
 - [ ] **Cold boot: send power-on 5x with 200ms gaps + 1s wait** — single power-on does not wake the board (see Section 3 cold-boot wake-up)
 - [ ] All wake-up frames must be in ONE TCP connection (or one open of `/dev/ttyS1`) — splitting across connections has failed
-- [ ] Verify bridge is running before starting app (`netstat | grep 7777`)
+- [ ] Start bridge AFTER the app is running and paused (force-stop kills the bridge). Verify LISTEN + no ESTABLISHED client before sending.
 - [ ] Never open the bridge twice
-- [ ] NE range is [18, 100] — do NOT limit to 50 based on community docs
+- [ ] NE range is [0, 100] — do NOT limit to 50 (community docs wrong) or 18 (also wrong). Confirmed 2026-05-29.
 - [ ] EUD is inverted — lower value = eyes look UP
-- [ ] NR_NEUTRAL ≠ 50 on this unit (causes left twist) — see Section 4
-- [ ] NT_NEUTRAL ≠ 50 on this unit (causes right tilt) — see Section 4
 - [ ] EUD soft min = 5 may cause slight grinding — raise to 8 if needed
 - [ ] PowerShell `[math]::Round(50 * 2.55)` = 127 not 128 — use floor+0.5 formula
 - [ ] PowerShell byte[] + byte[] = Object[] — build frames with indexed assignment only
@@ -276,18 +375,56 @@ Wire value from CSV: `wire = clamp(int(round(csv_value + 128)), 0, 255)`
 
 ## 11. "Motors not responding" — diagnostic order
 
-When motors don't move, work through these in order before suspecting protocol or wiring:
+### ⚠️ FIRST: read telemetry to classify the stuck state.
+
+There are **two distinct stuck states** with different recovery paths. Read `/dev/ttyS1` before doing anything else:
+
+```bash
+adb shell "busybox timeout -t 5 cat /dev/ttyS1 | busybox hexdump -C"
+```
+
+**State A — STIFF + MUTE (zero telemetry, not even a heartbeat):** the MCU is hung.
+A physical power-cycle recovered this state in session 8 (2026-05-31). After cycling: reconnect ADB, run the clean-control procedure (Section 7), do the 5× cold-boot wake, then a validation move with Alex watching.
+
+**State B — STIFF + heartbeat-only (`FA 00 01 00 ED FB`) + commands ignored:** recovery confirmed 2026-05-31.
+
+**Recovery — direct exec+stty (NOT the bridge):**
+```bash
+adb shell "exec 3<>/dev/ttyS1; busybox stty -F /dev/ttyS1 57600 raw -hupcl; \
+  busybox printf '\xFA\x00\x02\x4F\x7F\x0B\xCB' >&3; sleep 1; \
+  busybox printf '<motor-frame>' >&3; sleep 0.5"
+```
+Replace `<motor-frame>` with the target move frame (e.g. `\xFA\x00\x04\x01\x02\x01\xFF\xFC\x03` for NR=100). Confirmed: board produced `FA 00 09` position frames and head moved after this, with the bridge approach having just failed in the same session.
+
+**What does NOT clear State B:** bridge/nc relay path (any form), 5× wake via bridge, single `> /dev/ttyS1` redirect, force-stopping app, device-loopback via bridge.
+
+**Mechanism hypothesis (unconfirmed):** opening a second fd to `/dev/ttyS1` via `exec 3<>` while the bridge already holds fd3 may assert a UART signal (DTR or break) that resets the board's command-accept state. The persistent-fd form is required — the simple `>` redirect (which opens and immediately closes) does not work.
+
+**Boot-time contention (investigation incomplete):** `com.catalia.factorymode` (installed, has `RECEIVE_BOOT_COMPLETED` permission and references `/dev/ttyS1` in its DEX) is a candidate cause of State B on boot. If this or any process writes to the serial port during the board's post-boot init window, it may trigger State B.
+
+#### Post-power-cycle recovery (State A)
+1. `adb disconnect 192.168.0.180:5555 && adb connect 192.168.0.180:5555` (may take a couple of tries).
+2. Follow the clean-control procedure in Section 7.
+3. Run the 5× cold-boot wake (Section 3), then a validation move **with Alex watching**.
+4. Confirm engagement via telemetry: a successful move streams `FA 00 09 …` position frames (Section 13).
+
+### Full diagnostic order
+
+When motors don't move, work through these in order:
 
 1. **Limp vs stiff test.** Gently push the head with a finger.
    - **Limp** → motor board is unpowered. Wiring/power issue, NOT a software problem.
    - **Stiff** → board is powered and holding position. Continue below.
-2. **Bridge alive?** `adb shell "busybox netstat -tlnp | grep 7777"` — must show LISTEN.
-3. **Is this a cold boot?** If yes → run the 5x power-on wake-up sequence (Section 3).
-4. **Bridge or board?** Kill the bridge and write to `/dev/ttyS1` directly from adb shell.
-   If direct write works but the bridge doesn't → bridge bug. If neither works → board issue.
-5. **Read from `/dev/ttyS1`.** Some boards send heartbeat bytes. Silence here doesn't prove
-   the board is dead (the Mabu motor board appears silent in normal operation), but bytes
-   appearing would prove it's alive.
+2. **Read telemetry** (see above) — classify State A (mute) vs State B (heartbeat-only) vs working (see `FA 00 09` on commands).
+3. **Is this a cold boot?** If yes → run the 5× power-on wake-up sequence (Section 3).
+4. **App contention?** Verify no established client on 7777 before sending. Pause tracking if needed.
+5. **Bridge or board?** Try writing directly to `/dev/ttyS1` using the exec+stty form (NOT a simple redirect):
+   ```bash
+   adb shell "exec 3<>/dev/ttyS1; busybox stty -F /dev/ttyS1 57600 raw -hupcl; busybox printf '<frame>' >&3; sleep 0.5"
+   ```
+   - Direct exec+stty works but bridge doesn't → bridge relay issue.
+   - **State B:** direct exec+stty IS the recovery, not just a diagnostic. Try it before declaring the board stuck.
+   - Neither works → board is in State A (hung MCU) → power-cycle.
 
 ### NEVER reboot Mabu via ADB
 `adb reboot` has caused WiFi to not reconnect after boot, leaving the device unreachable with no recovery path (no USB, no physical buttons). **Do not run `adb reboot` under any circumstances.** If a reboot is truly needed, power-cycle the physical hardware instead.
@@ -326,5 +463,63 @@ gradually, but rapid programmatic sequences must respect this delay.
 
 **TODO:**
 - Confirm minimum safe settle time (2000ms sufficient, or more needed?)
-- Test whether EUD=100 has same issue at high rates
 - Test whether other hard stops (ELR=0/100, NE=0/100, NR=0/100, NT=0/100) are affected
+
+#### Update 2026-05-29 (session 7) — narrowed and partially characterized
+
+Re-tested over a single persistent socket (transport ruled out) with per-trial visual
+confirmation by Alex:
+
+- **The oscillation is specific to the UPPER stop, EUD=0 (max up).** The lower stop EUD=100
+  did **not** oscillate in isolation (5/5-style checks). Earlier "EUD=100 also oscillates"
+  reports were residual motion from a prior phase in a combined run — isolating each test
+  corrected this.
+- **Abrupt reversal from EUD=0 → 50 oscillates 100% (5/5 trials).** Duration varies run to run
+  (short to long) but it always fires. This is the most reliable trigger/identifier.
+- **Ramping back from EUD=0 (12 small steps) is NOT a reliable fix — 2/5 oscillated**, and the
+  5 trials alternated cleanly C,O,C,O,C (suggests a mechanical backlash/settle state that flips
+  between runs). When the ramped return did oscillate it was as bad or worse than abrupt.
+- **Best identifier for a code guard:** "EUD was just at the hard stop (≈0) and the next EUD
+  command is a large step away." Most robust mitigation is to **never command EUD to the
+  mechanical stop** — clamp `EUD_MIN` a few units above 0 (e.g. 5–8) so the eye never rides the
+  top stop. (Floor-fix not yet hardware-validated — see TODO.)
+- The app's per-frame `SMOOTH` interpolation approaches limits in tiny deltas, so the live app
+  is largely immune; the blunt "2000ms settle" rule only matters for crude step scripts.
+- **TODO:** validate the `EUD_MIN ≈ 5` floor fix on hardware (abrupt-reverse from 5, ×5).
+
+---
+
+## 13. Serial Telemetry / Readback (board → host)
+
+The motor board is **NOT silent** — it continuously transmits status frames on `/dev/ttyS1`.
+This is a useful, camera-free signal for detecting movement, oscillation, and the latch state.
+
+### How to read it
+The TCP bridge is **one-way** (`nc -l -p 7777 >&3` only copies TCP→serial). To see board output,
+read the device directly from adb shell (safe while the bridge holds the port, because `-hupcl`
+is set so the read open/close won't drop DTR):
+```bash
+adb shell "busybox timeout -t 5 cat /dev/ttyS1 | busybox hexdump -C"
+```
+**Reader-vs-bridge race:** if you start a `cat` capture at the same moment the bridge does its
+`exec 3<>` re-open, the reader can attach to nothing (0-byte capture). Start the capture and wait
+~1.5 s before sending commands.
+
+`busybox timeout` on this unit uses `-t SECONDS` (e.g. `-t 5`), NOT `timeout 5 …`.
+
+### Frame types
+| Frame | Meaning |
+|-------|---------|
+| `FA 00 01 00 ED FB` | **Idle heartbeat** (payload `00`). Streamed continuously when the board is not moving any motor. |
+| `FA 00 09 01 00 [LDL LDR ELR EUD NE NR NT] [s2 s1]` | **Position report.** Streamed while the board is engaged/moving. The 7 payload bytes are the live wire positions of all motors. |
+| `FA 00 02 4F 7F 0B CB` | Power-on frame **echoed back** (appears right after you send a power-on). |
+
+### Using telemetry as a marker
+- **Engagement check:** a successful move streams `FA 00 09 …` frames. If you send commands and
+  see **only** heartbeat (`FA 00 01 00`), the board did not engage → cold boot needs the 5× wake,
+  or it is in the command-latch state — see Section 11 to classify and choose recovery path.
+- **Oscillation detector (closed-loop):** during an oscillation, the EUD byte (4th payload byte)
+  in successive `FA 00 09` frames rings up and down before settling. Polling that byte gives a
+  programmatic oscillation signal with no camera needed — captured live during the EUD=0 bug
+  (the EUD byte cycled ~`7c 78 7b 7a …` around center). This is the basis for future
+  closed-loop tuning.
