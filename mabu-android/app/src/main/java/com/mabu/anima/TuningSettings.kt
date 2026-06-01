@@ -51,6 +51,22 @@ class TuningSettings {
     var eyeGazeInputAlpha = 0.35f
     var eyeGazeDeadband   = 0.06f
 
+    // --- Per-axis SENSE calibration (set by `mabu_tune.py calibrate`) ---------
+    // bias = resting sensor reading, SUBTRACTED before mapping. A kiosk that
+    //   tilts the tablet up makes a straight-ahead face read e.g. pitch +18deg;
+    //   biasing it out keeps the neck neutral when the user faces forward.
+    // range = the input magnitude that drives the motor to its extreme. SMALLER
+    //   = more exaggerated (a small head turn already fills Mabu's range).
+    // Defaults (bias 0, range 30) reproduce the old single-neckAngleRange behavior.
+    var yawBias    = 0f
+    var pitchBias  = 0f
+    var rollBias   = 0f
+    var yawRange   = 30f
+    var pitchRange = 30f
+    var rollRange  = 30f
+    var pupilXBias = 0f
+    var pupilYBias = 0f
+
     // Behavior à la carte -- modes apply preset combinations of these, but
     // individual flags can be flipped after.
     /** "spontaneous", "mirror", "both", or "none". */
@@ -126,6 +142,14 @@ class TuningSettings {
         useEyeGaze         = prefs.getBoolean("useEyeGaze",       useEyeGaze)
         eyeGazeInputAlpha  = prefs.getFloat("eyeGazeInputAlpha",  eyeGazeInputAlpha)
         eyeGazeDeadband    = prefs.getFloat("eyeGazeDeadband",    eyeGazeDeadband)
+        yawBias    = prefs.getFloat("yawBias",    yawBias)
+        pitchBias  = prefs.getFloat("pitchBias",  pitchBias)
+        rollBias   = prefs.getFloat("rollBias",   rollBias)
+        yawRange   = prefs.getFloat("yawRange",   yawRange)
+        pitchRange = prefs.getFloat("pitchRange", pitchRange)
+        rollRange  = prefs.getFloat("rollRange",  rollRange)
+        pupilXBias = prefs.getFloat("pupilXBias", pupilXBias)
+        pupilYBias = prefs.getFloat("pupilYBias", pupilYBias)
         blinkMethod        = prefs.getString("blinkMethod",       blinkMethod) ?: blinkMethod
         enableSaccades     = prefs.getBoolean("enableSaccades",   enableSaccades)
         enableGlances      = prefs.getBoolean("enableGlances",    enableGlances)
@@ -165,6 +189,14 @@ class TuningSettings {
             putBoolean("useEyeGaze",       useEyeGaze)
             putFloat("eyeGazeInputAlpha",  eyeGazeInputAlpha)
             putFloat("eyeGazeDeadband",    eyeGazeDeadband)
+            putFloat("yawBias",    yawBias)
+            putFloat("pitchBias",  pitchBias)
+            putFloat("rollBias",   rollBias)
+            putFloat("yawRange",   yawRange)
+            putFloat("pitchRange", pitchRange)
+            putFloat("rollRange",  rollRange)
+            putFloat("pupilXBias", pupilXBias)
+            putFloat("pupilYBias", pupilYBias)
             putString("blinkMethod",       blinkMethod)
             putBoolean("enableSaccades",   enableSaccades)
             putBoolean("enableGlances",    enableGlances)
@@ -243,5 +275,8 @@ class TuningSettings {
         neckRotSign        = -1f
         neckElevSign       =  1f
         neckTiltSign       =  1f
+        yawBias = 0f; pitchBias = 0f; rollBias = 0f
+        yawRange = 30f; pitchRange = 30f; rollRange = 30f
+        pupilXBias = 0f; pupilYBias = 0f
     }
 }

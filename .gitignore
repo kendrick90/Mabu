@@ -50,3 +50,11 @@ dumps/
 # Large APKs we don't ship in the repo (downloadable from F-Droid)
 apks/Termux.apk
 apks/Termux-API.apk
+
+# ADB debug scratch dropped in the repo root during dev sessions: screencaps
+# pulled off the device, logcat dumps, and uiautomator XML. All regenerable,
+# none belong in history.
+/*.png
+/*.txt
+/ui.xml
+!/README.md

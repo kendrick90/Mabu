@@ -344,8 +344,48 @@ def cmd_calibrate(args):
              fmt2(data["closed"].get("eye_open_prob_l")), fmt2(data["closed"].get("eye_open_prob_r"))))
     print("  face_ctr  rest=(%s, %s)  <- expect ~0.50,0.50; a stray value here is the 'offset'"
           % (fmt2(base.get("face_center_x")), fmt2(base.get("face_center_y"))))
-    print("\nNext: in CALIBRATION.md Stage 2, pick signs for MIRROR and set each")
-    print("inputRange a bit SMALLER than 'span' to exaggerate and fill Mabu's range.")
+
+    # --- derive applicable SENSE calibration: bias = rest reading; range a bit
+    #     smaller than the half-span to exaggerate (EXAG<1 fills Mabu's range) ---
+    def axis_cal(field, lokey, hikey, exag=0.6, rmin=8.0, rmax=80.0):
+        b = base.get(field); lo = data[lokey].get(field); hi = data[hikey].get(field)
+        if b is None or lo is None or hi is None:
+            return None
+        halfspan = (abs(hi - b) + abs(lo - b)) / 2.0
+        rng = max(rmin, min(rmax, exag * halfspan)) if halfspan > 1 else rmax
+        return round(b, 2), round(rng, 1)
+
+    apply = {}
+    for field, lokey, hikey, bk, rk in [
+        ("head_yaw", "yaw_l", "yaw_r", "yawBias", "yawRange"),
+        ("head_pitch", "pitch_d", "pitch_u", "pitchBias", "pitchRange"),
+        ("head_roll", "roll_l", "roll_r", "rollBias", "rollRange"),
+    ]:
+        c = axis_cal(field, lokey, hikey)
+        if c:
+            apply[bk], apply[rk] = c[0], c[1]
+    if base.get("pupil_raw_x") is not None:
+        apply["pupilXBias"] = round(base["pupil_raw_x"], 3)
+    if base.get("pupil_raw_y") is not None:
+        apply["pupilYBias"] = round(base["pupil_raw_y"], 3)
+
+    print("\n--- recommended SENSE calibration (bias removes rest offset; range exaggerates) ---")
+    for k in ("yawBias", "yawRange", "pitchBias", "pitchRange", "rollBias", "rollRange",
+              "pupilXBias", "pupilYBias"):
+        if k in apply:
+            print("  %-12s = %s" % (k, apply[k]))
+    print("\nSigns for MIRROR are NOT auto-set -- verify with the cheat-sheet and flip")
+    print("neckRotSign / neckTiltSign in the dashboard if a turn/tilt goes the wrong way.")
+    try:
+        ans = input("\nApply these bias+range values to the device now? [y/N] ").strip().lower()
+    except EOFError:
+        ans = "n"
+    if ans == "y":
+        post("/config", {k: str(v) for k, v in apply.items()})
+        show_prompt("", "", "")
+        print("applied. Switch to PUPPET, check the mirror, and fine-tune live in the dashboard.")
+    else:
+        print("not applied -- set them in the dashboard, or re-run and answer 'y'.")
 
 
 def fmt2(v):

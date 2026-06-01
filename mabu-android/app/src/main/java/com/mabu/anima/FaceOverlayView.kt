@@ -24,6 +24,12 @@ class FaceOverlayView @JvmOverloads constructor(
     // only when exactly one face is detected.
     @Volatile private var heardText: String? = null
 
+    // What Mabu is saying back. Drawn as a separate (yellow-tinted) bubble so
+    // it's visually distinct from the user's (green-tinted) one. Set by
+    // [setBotText]; rolled over by [setHeardText] when a new user turn lands so
+    // we don't pile two replies on top of each other.
+    @Volatile private var botText: String? = null
+
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 5f
@@ -76,6 +82,13 @@ class FaceOverlayView @JvmOverloads constructor(
         strokeWidth = 3f
         color = Color.argb(235, 80, 255, 120)
     }
+    // Mabu's reply gets a warm-yellow stroke so it reads as "from the robot",
+    // not "what the robot just heard from you" (which is the green bubble).
+    private val botBubbleStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+        color = Color.argb(235, 255, 210, 63)
+    }
     private val bubbleTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textSize = 34f
@@ -88,14 +101,39 @@ class FaceOverlayView @JvmOverloads constructor(
         postInvalidate()
     }
 
-    /** Set the live "what Mabu hears" text (null/blank hides the bubble). */
+    /** Set the live "what Mabu hears" text (null/blank hides the bubble).
+     *  A new heard turn implicitly clears Mabu's previous reply so the screen
+     *  doesn't carry both. */
     fun setHeardText(text: String?) {
-        heardText = text?.takeIf { it.isNotBlank() }
+        val t = text?.takeIf { it.isNotBlank() }
+        heardText = t
+        if (t != null) botText = null
+        postInvalidate()
+    }
+
+    /** Set "what Mabu is saying" text. New sentences within a single reply
+     *  REPLACE the previous (rather than concatenate) so the bubble stays
+     *  short -- the brain emits one bot-transcription per sentence. Pass null
+     *  or blank to clear (e.g. when the user starts a new turn). */
+    fun setBotText(text: String?) {
+        botText = text?.takeIf { it.isNotBlank() }
         postInvalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        // Mabu's reply bubble is anchored to the SCREEN, not the face -- the
+        // robot's head physically sits just above the tablet, so its words
+        // float at the top edge regardless of where the user is looking.
+        // Drawn first so face overlays paint over its tail if they overlap.
+        // We capture the bot bubble's bottom Y so the user bubble can avoid
+        // colliding with it when the face is near the top of the frame.
+        var botBubbleBottom = 0f
+        val bot = botText
+        if (!bot.isNullOrBlank()) {
+            botBubbleBottom = drawTopBubble(canvas, bot, width.toFloat())
+        }
+
         val r = result ?: return
         if (r.faces.isEmpty()) return
 
@@ -171,11 +209,16 @@ class FaceOverlayView @JvmOverloads constructor(
                 canvas.drawText(sb.toString(), l, ty, textPaint)
             }
 
-            // Speech bubble of what Mabu currently hears -- only when exactly
-            // one face is present (per request: a single addressed speaker).
+            // Heard bubble (green) follows the face. Mabu's reply bubble is
+            // drawn screen-anchored above onDraw's face loop (see drawTopBubble).
+            // minTop forces the heard bubble below the bot bubble when both
+            // are on screen and the face is high in frame, so they don't
+            // stack/overlap.
             val heard = heardText
             if (r.faces.size == 1 && !heard.isNullOrBlank()) {
-                drawSpeechBubble(canvas, l, t, rg, b, heard, viewW, viewH)
+                drawSpeechBubble(canvas, l, t, rg, b, heard, viewW, viewH,
+                    preferAbove = true, stroke = bubbleStrokePaint,
+                    minTop = botBubbleBottom + 12f)
             }
         }
         drawFaceInset(canvas, r)
@@ -187,10 +230,66 @@ class FaceOverlayView @JvmOverloads constructor(
      * Text is word-wrapped to [BUBBLE_MAX_WIDTH_FRAC] of the view width and
      * capped at [BUBBLE_MAX_LINES].
      */
+    /**
+     * Mabu's reply bubble. Anchored to the top of the screen (Mabu's head is
+     * physically above the tablet), tail points UP toward where her head is.
+     * Independent of whether a face is detected -- Mabu can talk to no one in
+     * particular.
+     */
+    /** Returns the Y coordinate of the bubble's bottom edge so callers can
+     *  push other UI below it (used to keep the user-heard bubble from
+     *  overlapping when both are on screen). */
+    private fun drawTopBubble(canvas: Canvas, text: String, viewW: Float): Float {
+        val padH = 22f
+        val padV = 16f
+        // Mabu's bubble spans nearly the full screen width so the reply wraps
+        // to as few lines as possible -- vertical space at the top is precious
+        // (it covers the camera preview). The bubble itself is always full
+        // width (not shrunk to the text) so short and long replies share a
+        // stable footprint.
+        val sideMargin = 16f
+        val bubbleW = viewW - 2 * sideMargin
+        val maxTextW = bubbleW - 2 * padH
+        val lines = wrapText(text, bubbleTextPaint, maxTextW, TOP_BUBBLE_MAX_LINES)
+        if (lines.isEmpty()) return 0f
+
+        val lineH = bubbleTextPaint.fontSpacing
+        val bubbleH = lines.size * lineH + 2 * padV
+
+        val left = sideMargin
+        val top = 14f
+        val rect = android.graphics.RectF(left, top, left + bubbleW, top + bubbleH)
+        canvas.drawRoundRect(rect, 20f, 20f, bubbleBgPaint)
+        canvas.drawRoundRect(rect, 20f, 20f, botBubbleStrokePaint)
+
+        // Tail: a small triangle pointing UP off the top edge -- toward
+        // Mabu's actual head (just above the tablet's top bezel).
+        val tailX = left + bubbleW / 2f
+        val tail = android.graphics.Path()
+        tail.moveTo(tailX - 14f, rect.top + 1f)
+        tail.lineTo(tailX + 14f, rect.top + 1f)
+        tail.lineTo(tailX, rect.top - 18f)
+        tail.close()
+        canvas.drawPath(tail, bubbleBgPaint)
+        canvas.drawPath(tail, botBubbleStrokePaint)
+
+        var ty = top + padV + bubbleTextPaint.textSize
+        for (line in lines) {
+            canvas.drawText(line, left + padH, ty, bubbleTextPaint)
+            ty += lineH
+        }
+        return rect.bottom
+    }
+
     private fun drawSpeechBubble(
         canvas: Canvas,
         faceL: Float, faceT: Float, faceR: Float, faceB: Float,
-        text: String, viewW: Float, viewH: Float
+        text: String, viewW: Float, viewH: Float,
+        preferAbove: Boolean = true,
+        stroke: Paint = bubbleStrokePaint,
+        /** Hard lower bound on the bubble's top edge -- typically the bottom
+         *  of the bot bubble + a small gap, so the two never overlap. */
+        minTop: Float = 8f
     ) {
         val padH = 22f
         val padV = 16f
@@ -206,14 +305,19 @@ class FaceOverlayView @JvmOverloads constructor(
         val faceCx = (faceL + faceR) / 2f
         var left = (faceCx - bubbleW / 2f).coerceIn(8f, viewW - bubbleW - 8f)
         val gap = 18f
-        // Prefer above the face; if it would clip the top, put it below.
-        val above = faceT - gap - bubbleH >= 8f
+        // Above-the-face is only allowed if it clears minTop (the bot bubble's
+        // lower edge). Otherwise force below. If even below would clip the view
+        // bottom, fall back to coerceIn -- that's the worst case but at least
+        // the bubble stays visible.
+        val fitsAbove = (faceT - gap - bubbleH) >= minTop
+        val above = if (preferAbove) fitsAbove
+                    else fitsAbove && !(faceB + gap + bubbleH <= viewH - 8f)
         var top = if (above) faceT - gap - bubbleH else faceB + gap
-        top = top.coerceIn(8f, viewH - bubbleH - 8f)
+        top = top.coerceIn(minTop, viewH - bubbleH - 8f)
 
         val rect = android.graphics.RectF(left, top, left + bubbleW, top + bubbleH)
         canvas.drawRoundRect(rect, 20f, 20f, bubbleBgPaint)
-        canvas.drawRoundRect(rect, 20f, 20f, bubbleStrokePaint)
+        canvas.drawRoundRect(rect, 20f, 20f, stroke)
 
         // Tail: a small triangle from the bubble edge toward the face center.
         val tailX = faceCx.coerceIn(left + 24f, left + bubbleW - 24f)
@@ -283,10 +387,13 @@ class FaceOverlayView @JvmOverloads constructor(
         val viewH = height.toFloat()
         val side = (minOf(viewW, viewH) * 0.35f)
         val pad = 18f
+        // Bottom-left: the top of the screen is reserved for Mabu's speech
+        // bubble (Mabu's head physically sits above the tablet, so the bubble
+        // belongs there). Keep clear of the bottom mic-status pill.
         val insetLeft = pad
-        val insetTop = pad
+        val insetBottom = viewH - pad - 100f
+        val insetTop = insetBottom - side
         val insetRight = insetLeft + side
-        val insetBottom = insetTop + side
 
         canvas.drawRect(insetLeft - 4f, insetTop - 4f, insetRight + 4f, insetBottom + 4f,
             insetBackgroundPaint)
@@ -355,8 +462,14 @@ class FaceOverlayView @JvmOverloads constructor(
     }
 
     companion object {
-        private const val BUBBLE_MAX_WIDTH_FRAC = 0.5f
-        private const val BUBBLE_MAX_LINES = 4
+        // Wider + taller so a multi-sentence turn fits without aggressive
+        // truncation. 65% of the view leaves room for the face on either side
+        // of the user bubble; 6 lines covers most short conversational turns.
+        private const val BUBBLE_MAX_WIDTH_FRAC = 0.65f
+        private const val BUBBLE_MAX_LINES = 6
+        // Mabu's top bubble is full width, so the same text wraps to far fewer
+        // lines -- cap it lower to keep its vertical footprint small.
+        private const val TOP_BUBBLE_MAX_LINES = 4
 
         private val CONTOUR_TYPES = intArrayOf(
             FaceContour.FACE,

@@ -207,9 +207,14 @@ class RemoteAsr(
                 put("no_speech_thresh", 0.45)
                 put("clip_audio", false)
                 put("same_output_threshold", 5)
-                // Bias recognition toward the robot's name (Whisper tends to
-                // hear "Maru"/"Mabo" otherwise).
-                put("hotwords", "Mabu")
+                // NOTE: hotwords intentionally OFF. Biasing Whisper toward
+                // "Mabu" was great for catching the name in clean speech, but
+                // also caused it to HALLUCINATE "Mabu" on motor servo noise
+                // and other near-silence (Whisper happily emits the biased
+                // token when no real speech is present). Same call as the
+                // pipecat path now makes (whisperlive_stt.py): rely on VAD to
+                // gate noise out of the model instead. Re-enable only if VAD
+                // alone can't catch the name in normal speech.
             }
             ws.send(cfg.toString())
             Log.i(TAG, "sent handshake (model=$model)")

@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mabu · system reference</title>
+<style>
+  :root {
+    --bg: #0d1014;
+    --bg-2: #14181f;
+    --bg-3: #1c2128;
+    --line: #232a33;
+    --fg: #e6edf3;
+    --fg-dim: #8b96a3;
+    --fg-faint: #5a6573;
+    --accent: #ffd23f;       /* Mabu yellow */
+    --accent-soft: #ffd23f22;
+    --get: #6cc7ff;
+    --post: #b48cff;
+    --del: #ff7e7e;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 15px; line-height: 1.55; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, kbd, pre { font-family: var(--mono); font-size: 0.92em; }
+  code { background: var(--bg-3); padding: 1px 6px; border-radius: 4px; color: #ffe89a; }
+  pre { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto; line-height: 1.5; }
+  pre code { background: transparent; padding: 0; color: var(--fg); }
+
+  /* Layout */
+  .layout { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+  aside { background: var(--bg-2); border-right: 1px solid var(--line); padding: 22px 0; position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto; }
+  main { padding: 56px 64px 120px; max-width: 880px; }
+
+  /* Sidebar */
+  .brand { display: flex; align-items: center; gap: 10px; padding: 0 22px 18px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+  .brand .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+  .brand .name { font-weight: 600; letter-spacing: 0.02em; }
+  .brand .sub { color: var(--fg-faint); font-size: 12px; font-family: var(--mono); margin-left: auto; }
+
+  nav ol { list-style: none; padding: 0; margin: 0; }
+  nav .group { padding: 14px 22px 6px; color: var(--fg-faint); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
+  nav a { display: block; padding: 6px 22px; color: var(--fg-dim); border-left: 2px solid transparent; }
+  nav a:hover { color: var(--fg); background: var(--bg-3); text-decoration: none; }
+  nav a.active { color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); }
+
+  /* Headings */
+  h1 { font-size: 38px; margin: 0 0 6px; letter-spacing: -0.02em; }
+  h1 .pill { font-size: 12px; vertical-align: middle; margin-left: 12px; }
+  h2 { font-size: 24px; margin: 56px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); letter-spacing: -0.01em; }
+  h3 { font-size: 17px; margin: 32px 0 10px; color: var(--fg); }
+  p { color: var(--fg); }
+  p.lede { color: var(--fg-dim); font-size: 17px; max-width: 68ch; margin-top: 0; }
+
+  /* Pills */
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.03em; }
+  .pill.get { background: rgba(108,199,255,0.15); color: var(--get); border: 1px solid rgba(108,199,255,0.35); }
+  .pill.post { background: rgba(180,140,255,0.15); color: var(--post); border: 1px solid rgba(180,140,255,0.35); }
+  .pill.del  { background: rgba(255,126,126,0.15); color: var(--del); border: 1px solid rgba(255,126,126,0.35); }
+  .pill.kind { background: var(--bg-3); color: var(--fg-dim); border: 1px solid var(--line); }
+  .pill.live { background: var(--accent-soft); color: var(--accent); border: 1px solid #ffd23f55; }
+
+  /* Endpoint card */
+  .endpoint { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; margin: 18px 0; }
+  .endpoint header { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+  .endpoint .path { font-family: var(--mono); font-size: 15px; color: var(--fg); }
+  .endpoint .desc { color: var(--fg-dim); margin: 6px 0 14px; }
+  .endpoint details { margin-top: 10px; }
+  .endpoint summary { cursor: pointer; color: var(--fg-dim); font-size: 13px; padding: 6px 0; user-select: none; }
+  .endpoint summary:hover { color: var(--fg); }
+  .endpoint summary::marker { color: var(--fg-faint); }
+
+  /* Field table */
+  table.fields { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 14px; }
+  table.fields th, table.fields td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.fields th { font-weight: 600; color: var(--fg-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid var(--line); }
+  table.fields td.key { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+  table.fields td.type { font-family: var(--mono); color: var(--fg-dim); font-size: 12px; white-space: nowrap; }
+  table.fields td.desc { color: var(--fg); }
+
+  /* ASCII diagram */
+  pre.diagram { color: var(--fg-dim); font-size: 13px; line-height: 1.4; }
+  pre.diagram .hl { color: var(--accent); }
+  pre.diagram .arr { color: var(--get); }
+
+  /* Note callout */
+  .note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 18px 0; color: var(--fg); }
+  .note.warn { border-left-color: var(--del); background: rgba(255,126,126,0.08); }
+  .note .label { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 4px; }
+  .note.warn .label { color: var(--del); }
+
+  /* Footer */
+  footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--fg-faint); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside>
+    <div class="brand">
+      <div class="dot"></div>
+      <div class="name">Mabu</div>
+      <div class="sub">v0.dev</div>
+    </div>
+    <nav>
+      <div class="group">Get oriented</div>
+      <a href="#overview">Overview</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#ports">Ports &amp; hosts</a>
+
+      <div class="group">Device APIs (tablet)</div>
+      <a href="#device-status">GET /status</a>
+      <a href="#device-healthz">GET /healthz</a>
+      <a href="#status-fields">Status fields</a>
+      <a href="#device-adb">ADB control intents</a>
+
+      <div class="group">Brain APIs (PC)</div>
+      <a href="#brain-status">GET /status</a>
+      <a href="#brain-personas">GET /personas</a>
+      <a href="#brain-voices">GET /voices</a>
+      <a href="#brain-switch">POST /switch</a>
+      <a href="#brain-voice">POST /voice</a>
+      <a href="#brain-create">POST /create</a>
+      <a href="#brain-offer">Pipecat /offer (WebRTC)</a>
+
+      <div class="group">Reference</div>
+      <a href="#dataflow">Data channel events</a>
+      <a href="#modes">Reflex modes</a>
+    </nav>
+  </aside>
+
+  <main>
+    <section id="overview">
+      <h1>Mabu <span class="pill live">live system</span></h1>
+      <p class="lede">Mabu is a small yellow tabletop social robot. The Android tablet runs reflexes (face tracking → eyes &amp; neck, eyelids, blinks) and streams audio over WebRTC to a desktop "brain" that handles VAD, STT, LLM, and TTS as a single Pipecat pipeline. This is the reference for the HTTP surfaces and ADB hooks that let you observe and drive both sides.</p>
+
+      <p>The tablet ships an Android app (<code>com.mabu.anima</code>); the brain is a Python process on the PC (<code>pc-brain/pipecat_bot.py</code>) that also bundles a small control HTTP server. Both expose JSON over plain HTTP on the LAN — no auth, no TLS, trust model is "same Wi-Fi".</p>
+    </section>
+
+    <section id="architecture">
+      <h2>Architecture</h2>
+      <pre class="diagram">
+   ┌────────────────────── tablet ──────────────────────┐         ┌─────── PC brain ────────┐
+   │                                                    │         │                         │
+   │  Camera1 ─▶ <span class="hl">FaceAnalyzer (ML Kit)</span> ─▶ <span class="hl">MabuMotors</span>      │         │  WhisperLive (STT)      │
+   │                       │                            │         │  llama-server (LLM)     │
+   │                       └─▶ <span class="hl">DeviceStats</span> ──┐         │         │  Chatterbox (TTS)       │
+   │                                            │         │         │  Silero VAD            │
+   │     mic ──┐                               <span class="hl">StatusServer</span> │ │  SmartTurn v3          │
+   │           ▼                                :7862     │         │                         │
+   │      <span class="hl">PipecatVoice</span> ◀─── WebRTC (audio + ctl) ───────▶ <span class="hl">pipecat_bot</span> :7860      │
+   │           │                                          │   <span class="arr">▲</span>     │           │             │
+   │           └─▶ DeviceStats (transport/mic)            │   │     │           ▼             │
+   │                                                      │   │     │  <span class="hl">control_server</span> :7861    │
+   └──────────────────────────────────────────────────────┘   │     └───────────│─────────────┘
+                                                              │                 │
+                          curl / scripts ─────────────────────┴─────────────────┘
+      </pre>
+      <p class="lede" style="margin-top:18px">Per-component reference is below. The status endpoints on both sides are the fast way to ask "is everything still alive?" without an ADB shell.</p>
+    </section>
+
+    <section id="ports">
+      <h2>Ports &amp; hosts</h2>
+      <table class="fields">
+        <thead><tr><th>Host</th><th>Port</th><th>Service</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="key">tablet</td><td class="type">7862</td><td>StatusServer</td><td class="desc">Device telemetry &amp; health (JSON).</td></tr>
+          <tr><td class="key">brain</td><td class="type">7860</td><td>Pipecat runner</td><td class="desc">WebRTC offer endpoint + dev test UI.</td></tr>
+          <tr><td class="key">brain</td><td class="type">7861</td><td>control_server</td><td class="desc">Persona + voice control API.</td></tr>
+          <tr><td class="key">brain</td><td class="type">8080</td><td>llama-server</td><td class="desc">OpenAI-compatible LLM.</td></tr>
+          <tr><td class="key">brain</td><td class="type">8123</td><td>Chatterbox</td><td class="desc">TTS HTTP service.</td></tr>
+          <tr><td class="key">brain</td><td class="type">9090</td><td>WhisperLive</td><td class="desc">STT websocket.</td></tr>
+        </tbody>
+      </table>
+      <div class="note">
+        <span class="label">Firewall</span>
+        Each brain port needs a Windows inbound rule. WhisperLive is loopback-only and doesn't.
+      </div>
+    </section>
+
+    <h2 id="device-api">Device API <span class="pill kind">tablet · :7862</span></h2>
+    <p>Embedded HTTP server in the Android app. LAN-only, single-threaded accept, two-worker pool. Bound to <code>0.0.0.0</code> so anyone on the LAN can poll. Responses include <code>Access-Control-Allow-Origin: *</code> so a browser dashboard can call straight in.</p>
+
+    <div id="device-status" class="endpoint">
+      <header><span class="pill get">GET</span><span class="path">/status</span></header>
+      <div class="desc">Full <code>DeviceStats</code> snapshot — frame timing, transport state, motor link, battery, heap. The HUD overlay on the tablet reads from the same struct, so what you see here matches what's painted top-left.</div>
+      <details open>
+        <summary>Example response</summary>
+<pre><code>{
+  "uptime_sec": 36,
+  "mlkit_fps": 11.4,
+  "mlkit_mean_ms": 93.2,
+  "mlkit_max_ms": 95.8,
+  "mlkit_total_frames": 267,
+  "video_sending_kbps": 0,
+  "video_sending_fps": 0,
+  "video_rtt_ms": 0,
+  "video_packets_lost": 0,
+  "transport_state": "Ready",
+  "mic_enabled": true,
+  "cam_enabled": false,
+  "motor_link_open": true,
+  "mode": "FOLLOW",
+  "heap_used_mb": 7,
+  "heap_max_mb": 192,
+  "battery_pct": 60,
+  "battery_temp_c": 31.2
+}</code></pre>
+      </details>
+    </div>
+
+    <div id="device-healthz" class="endpoint">
+      <header><span class="pill get">GET</span><span class="path">/healthz</span></header>
+      <div class="desc">Liveness probe. <code>200 OK</code> body <code>ok</code>. Use this for monitors that don't care about the body of <code>/status</code>.</div>
+    </div>
+
+    <h3 id="status-fields">Status fields</h3>
+    <table class="fields">
+      <thead><tr><th>Field</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td class="key">uptime_sec</td><td class="type">int</td><td class="desc">Seconds since app process started.</td></tr>
+        <tr><td class="key">mlkit_fps</td><td class="type">float</td><td class="desc">Detections per second over the last sampling window (~500 ms).</td></tr>
+        <tr><td class="key">mlkit_mean_ms</td><td class="type">float</td><td class="desc">Mean ML Kit + gaze + crop time per frame in the window.</td></tr>
+        <tr><td class="key">mlkit_max_ms</td><td class="type">float</td><td class="desc">Max frame time in the window (resets each snapshot).</td></tr>
+        <tr><td class="key">mlkit_total_frames</td><td class="type">int</td><td class="desc">Cumulative since app start.</td></tr>
+        <tr><td class="key">video_sending_kbps</td><td class="type">int</td><td class="desc">Outbound video bitrate. Currently <code>0</code> until WebRTC stats are wired.</td></tr>
+        <tr><td class="key">video_sending_fps</td><td class="type">int</td><td class="desc">Outbound video framerate. Same caveat.</td></tr>
+        <tr><td class="key">video_rtt_ms</td><td class="type">int</td><td class="desc">Round-trip time of the WebRTC session.</td></tr>
+        <tr><td class="key">video_packets_lost</td><td class="type">int</td><td class="desc">Cumulative outbound video packet loss.</td></tr>
+        <tr><td class="key">transport_state</td><td class="type">string</td><td class="desc">Pipecat state — one of <code>Disconnected</code>, <code>Connecting</code>, <code>Connected</code>, <code>Ready</code>.</td></tr>
+        <tr><td class="key">mic_enabled</td><td class="type">bool</td><td class="desc">Outbound mic track active.</td></tr>
+        <tr><td class="key">cam_enabled</td><td class="type">bool</td><td class="desc">Outbound camera track active (handoff from on-device ML Kit).</td></tr>
+        <tr><td class="key">motor_link_open</td><td class="type">bool</td><td class="desc">USB-serial bridge to the head MCU is up.</td></tr>
+        <tr><td class="key">mode</td><td class="type">string</td><td class="desc">Reflex mode — <code>FOLLOW</code>, <code>PUPPET</code>, <code>IDLE</code>, <code>SLEEP</code>.</td></tr>
+        <tr><td class="key">motor_cmd_hz</td><td class="type">float</td><td class="desc">Bus chatter — motor commands per second over the snapshot window. Deadbands should keep this near 0 at rest; rising values mean jitter is leaking through.</td></tr>
+        <tr><td class="key">heap_used_mb / heap_max_mb</td><td class="type">int</td><td class="desc">App JVM heap.</td></tr>
+        <tr><td class="key">battery_pct</td><td class="type">int</td><td class="desc">0–100, or <code>-1</code> if unavailable.</td></tr>
+        <tr><td class="key">battery_temp_c</td><td class="type">float</td><td class="desc">Battery temperature, may be <code>null</code>.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Motor telemetry</h3>
+    <p>Last positions actually written to the head MCU (0–100 scale, <code>-1</code> if never sent in this session). Mirrors the wire, so scripted blinks &amp; resting poses show up here too — not just live tween output.</p>
+    <table class="fields">
+      <thead><tr><th>Field</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td class="key">motor_eyelid_l / motor_eyelid_r</td><td class="type">float</td><td class="desc">Per-side eyelid position. Unit 4 has inverted scale: <code>5</code> = open, <code>50</code> = half-closed.</td></tr>
+        <tr><td class="key">motor_eyes_lr / motor_eyes_ud</td><td class="type">float</td><td class="desc">Eye gaze X/Y target. <code>50</code> is centered.</td></tr>
+        <tr><td class="key">motor_neck_rot / motor_neck_elev / motor_neck_tilt</td><td class="type">float</td><td class="desc">Neck yaw / pitch / roll. <code>50</code> is resting pose.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Animation pipeline</h3>
+    <p>Intermediate values from the reflex loop. Reading raw vs. filtered side-by-side is the way to localize where jitter enters — sensor, smoothing, or tween.</p>
+    <table class="fields">
+      <thead><tr><th>Field</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td class="key">head_yaw / head_pitch / head_roll</td><td class="type">float</td><td class="desc">Head pose estimate from ML Kit, in degrees.</td></tr>
+        <tr><td class="key">pupil_raw_x / pupil_raw_y</td><td class="type">float</td><td class="desc">Heuristic pupil position straight from the NV21 pass — noisy.</td></tr>
+        <tr><td class="key">pupil_filt_x / pupil_filt_y</td><td class="type">float</td><td class="desc">Same signal after smoothing — what actually drives gaze targets.</td></tr>
+        <tr><td class="key">eye_open_prob_l / eye_open_prob_r</td><td class="type">float</td><td class="desc">ML Kit's eye-open classifier output (0–1), per side.</td></tr>
+        <tr><td class="key">eye_closed_l / eye_closed_r</td><td class="type">bool</td><td class="desc">Thresholded closure decision driving the eyelid mirror.</td></tr>
+        <tr><td class="key">target_eyes_lr / target_eyes_ud</td><td class="type">float</td><td class="desc">Tween target the renderer is easing toward (eye gaze).</td></tr>
+        <tr><td class="key">target_neck_rot / target_neck_elev / target_neck_tilt</td><td class="type">float</td><td class="desc">Tween target for the neck.</td></tr>
+        <tr><td class="key">blink_method</td><td class="type">string</td><td class="desc">Active blink driver — <code>spontaneous</code>, <code>mirror</code>, or <code>both</code>.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="device-adb">ADB control intents</h3>
+    <p>For driving the app from a dev host without touching the screen. Sent via <code>adb shell am broadcast</code>; all action strings are namespaced <code>com.mabu.anima.*</code>.</p>
+
+    <div class="endpoint">
+      <header><span class="pill post">BROADCAST</span><span class="path">com.mabu.anima.SAY</span></header>
+      <div class="desc">Inject text as the user — appended to the LLM context, triggers a bot turn. No mic needed.</div>
+<pre><code>adb shell am broadcast -a com.mabu.anima.SAY --es text "what time is it"</code></pre>
+    </div>
+    <div class="endpoint">
+      <header><span class="pill post">BROADCAST</span><span class="path">com.mabu.anima.SPEAK</span></header>
+      <div class="desc">Speak literal text via TTS (no LLM round-trip). Useful for tests.</div>
+<pre><code>adb shell am broadcast -a com.mabu.anima.SPEAK --es text "hello there"</code></pre>
+    </div>
+    <div class="endpoint">
+      <header><span class="pill post">BROADCAST</span><span class="path">com.mabu.anima.MODE</span></header>
+      <div class="desc">Switch reflex mode. See <a href="#modes">Reflex modes</a>.</div>
+<pre><code>adb shell am broadcast -a com.mabu.anima.MODE --es name FOLLOW</code></pre>
+    </div>
+    <div class="endpoint">
+      <header><span class="pill post">BROADCAST</span><span class="path">com.mabu.anima.STOP</span></header>
+      <div class="desc">Cancel any in-flight LLM stream and stop TTS playback.</div>
+<pre><code>adb shell am broadcast -a com.mabu.anima.STOP</code></pre>
+    </div>
+    <div class="endpoint">
+      <header><span class="pill post">BROADCAST</span><span class="path">com.mabu.anima.CAM</span></header>
+      <div class="desc">Toggle video mode — hand the single Camera1 device between on-device ML Kit (reflexes) and the Pipecat SDK (outbound video to the brain). <code>on=1</code> releases the camera for the SDK; <code>on=0</code> returns it to ML Kit.</div>
+<pre><code>adb shell am broadcast -a com.mabu.anima.CAM --es on 1</code></pre>
+      <div class="note warn" style="margin-top:14px">
+        <span class="label">Status</span>
+        Wiring is in place; outbound frames don't yet flow due to a CameraManager init quirk in the Pipecat Android SDK. See <code>setVideoMode()</code> in MainActivity.
+      </div>
+    </div>
+
+    <h2 id="brain-api">Brain API <span class="pill kind">PC · :7861</span></h2>
+    <p>Embedded in the Pipecat bot process; reads/writes go through the live <code>PersonaControl</code>. Commands are queued and applied on the pipeline loop, so the API never races mid-frame.</p>
+
+    <div id="brain-status" class="endpoint">
+      <header><span class="pill get">GET</span><span class="path">/status</span></header>
+      <div class="desc">Active persona + voice state, including available personas and on-disk voice samples.</div>
+      <details>
+        <summary>Example response</summary>
+<pre><code>{
+  "active": "mabu",
+  "voice": "default",
+  "mode": "live",
+  "personas": ["mabu", "pirate pete"],
+  "voices": ["default", "kendrick", "captain"]
+}</code></pre>
+      </details>
+    </div>
+
+    <div id="brain-personas" class="endpoint">
+      <header><span class="pill get">GET</span><span class="path">/personas</span></header>
+      <div class="desc">List of saved persona display names.</div>
+    </div>
+
+    <div id="brain-voices" class="endpoint">
+      <header><span class="pill get">GET</span><span class="path">/voices</span></header>
+      <div class="desc">Voice-clone WAV samples in <code>pc-brain/voices/</code>, plus the built-in <code>default</code>.</div>
+    </div>
+
+    <div id="brain-switch" class="endpoint">
+      <header><span class="pill post">POST</span><span class="path">/switch</span></header>
+      <div class="desc">Switch to a different persona live. Queued; takes effect on next pipeline tick.</div>
+<pre><code>curl -X POST http://brain:7861/switch \
+  -H "Content-Type: application/json" \
+  -d '{"name": "pirate pete"}'</code></pre>
+    </div>
+
+    <div id="brain-voice" class="endpoint">
+      <header><span class="pill post">POST</span><span class="path">/voice</span></header>
+      <div class="desc">Set the current persona's voice. Voice must be a known WAV name (see <code>/voices</code>) or <code>default</code>.</div>
+<pre><code>curl -X POST http://brain:7861/voice \
+  -H "Content-Type: application/json" \
+  -d '{"name": "kendrick"}'</code></pre>
+    </div>
+
+    <div id="brain-create" class="endpoint">
+      <header><span class="pill post">POST</span><span class="path">/create</span></header>
+      <div class="desc">Create a new persona from a system prompt. Set <code>activate: true</code> to switch to it in the same call.</div>
+<pre><code>curl -X POST http://brain:7861/create \
+  -H "Content-Type: application/json" \
+  -d '{"name": "ada", "prompt": "You are Ada, ...", "activate": true}'</code></pre>
+    </div>
+
+    <h2 id="brain-offer">Pipecat WebRTC offer <span class="pill kind">PC · :7860</span></h2>
+    <p>The Pipecat runner serves both the dev test UI (browser mic) and the WebRTC offer endpoint that the Pipecat Android SDK posts to. The Android app's <code>PipecatVoice</code> handles negotiation; you typically don't call this directly.</p>
+    <div class="endpoint">
+      <header><span class="pill post">POST</span><span class="path">/api/offer</span></header>
+      <div class="desc">Small-WebRTC SDP exchange. Body and response shape are defined by the Pipecat Small-WebRTC transport — see <a href="https://docs.pipecat.ai">docs.pipecat.ai</a>.</div>
+    </div>
+
+    <h2 id="dataflow">Data channel events</h2>
+    <p>Once the WebRTC session is up, the brain and device exchange JSON messages on the RTVI data channel. The device exposes them via <code>PipecatVoice.Listener.onServerMessage(Value)</code>.</p>
+    <table class="fields">
+      <thead><tr><th>Direction</th><th>Type</th><th>Use</th></tr></thead>
+      <tbody>
+        <tr><td class="key">brain → device</td><td class="type">user-started-speaking</td><td class="desc">VAD detected user voice onset.</td></tr>
+        <tr><td class="key">brain → device</td><td class="type">user-stopped-speaking</td><td class="desc">User voice offset; turn may end.</td></tr>
+        <tr><td class="key">brain → device</td><td class="type">user-transcription</td><td class="desc">Streaming or final STT result.</td></tr>
+        <tr><td class="key">brain → device</td><td class="type">bot-started-speaking</td><td class="desc">TTS playback began. Echo-guard mute window starts.</td></tr>
+        <tr><td class="key">brain → device</td><td class="type">bot-stopped-speaking</td><td class="desc">TTS playback finished.</td></tr>
+        <tr><td class="key">device → brain</td><td class="type">trackStatus</td><td class="desc">Outbound mic/cam track toggle (e.g. after <code>SAY</code> while muted).</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="modes">Reflex modes</h2>
+    <p>The four behavior presets the Android app's eyes-and-neck loop runs under. Set via the <code>MODE</code> ADB broadcast or by tapping the camera preview to cycle.</p>
+    <table class="fields">
+      <thead><tr><th>Mode</th><th>Behavior</th></tr></thead>
+      <tbody>
+        <tr><td class="key">FOLLOW</td><td class="desc">Track the user's face with eyes + neck; spontaneous blinks + microsaccades + glances. Default conversational pose.</td></tr>
+        <tr><td class="key">PUPPET</td><td class="desc">Mirror the user — eyes follow their gaze, eyelids mirror per-side blink, neck mirrors head pose.</td></tr>
+        <tr><td class="key">IDLE</td><td class="desc">No face-driven motion; saccades + blinks still run. Useful for "looking around" demos.</td></tr>
+        <tr><td class="key">SLEEP</td><td class="desc">Eyelids closed, neck centered, no saccades. Quietest default for audio-only development.</td></tr>
+      </tbody>
+    </table>
+
+    <footer>
+      <div>Mabu reference · generated from in-tree sources · serve this file from <code>file://</code> or any static host.</div>
+    </footer>
+  </main>
+</div>
+
+<script>
+  // Scrollspy: highlight the sidebar entry whose section is currently in view.
+  const nav = document.querySelectorAll('aside nav a');
+  const targets = Array.from(nav)
+    .map(a => ({ a, el: document.querySelector(a.getAttribute('href')) }))
+    .filter(t => t.el);
+  function spy() {
+    let active = targets[0];
+    const probe = window.scrollY + 120;
+    for (const t of targets) if (t.el.offsetTop <= probe) active = t;
+    nav.forEach(a => a.classList.toggle('active', a === active.a));
+  }
+  document.addEventListener('scroll', spy, { passive: true });
+  spy();
+</script>
+</body>
+</html>

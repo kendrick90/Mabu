@@ -277,7 +277,18 @@ var CFG=[
  ["eyelidBlinkHoldMs","Blink hold ms",0,400,10],
  ["eyelidPoseSoftDeg","Pose soft (deg)",0,45,1],
  ["eyelidPoseLimitDeg","Pose limit (deg)",10,90,1],
- ["gazeYOffset","Gaze Y offset",-0.3,0.3,0.01]
+ ["gazeYOffset","Gaze Y offset",-0.3,0.3,0.01],
+ ["yawBias","Yaw bias",-45,45,0.5],
+ ["pitchBias","Pitch bias",-45,45,0.5],
+ ["rollBias","Roll bias",-45,45,0.5],
+ ["yawRange","Yaw range",5,90,1],
+ ["pitchRange","Pitch range",5,90,1],
+ ["rollRange","Roll range",5,90,1],
+ ["pupilXBias","Pupil X bias",-1,1,0.02],
+ ["pupilYBias","Pupil Y bias",-1,1,0.02],
+ ["neckRotSign","Yaw sign (mirror)",-1,1,2],
+ ["neckElevSign","Pitch sign",-1,1,2],
+ ["neckTiltSign","Tilt sign (mirror)",-1,1,2]
 ];
 var BOOLS=[["useEyeGaze","Use eye gaze"]];
 
