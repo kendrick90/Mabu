@@ -41,6 +41,10 @@ class StatusServer(
         fun configJson(): JSONObject
         fun applyConfig(params: Map<String, String>)
         fun setMode(mode: String)
+        /** Restore behavioral tuning defaults (preserves hardware calibration). */
+        fun resetConfig()
+        /** Show a full-screen calibration prompt on the device. Empty title hides it. */
+        fun showPrompt(title: String, phase: String, upcoming: String)
     }
 
     private var serverSocket: ServerSocket? = null
@@ -137,6 +141,15 @@ class StatusServer(
                     method == "POST" && path == "/mode" -> {
                         val mode = parseForm(body)["mode"]
                         if (mode != null) hooks?.setMode(mode)
+                        write(out, 200, "application/json", "{\"ok\":true}")
+                    }
+                    method == "POST" && path == "/reset" -> {
+                        hooks?.resetConfig()
+                        write(out, 200, "application/json", "{\"ok\":true}")
+                    }
+                    method == "POST" && path == "/prompt" -> {
+                        val f = parseForm(body)
+                        hooks?.showPrompt(f["title"] ?: "", f["phase"] ?: "", f["upcoming"] ?: "")
                         write(out, 200, "application/json", "{\"ok\":true}")
                     }
                     else -> write(out, 404, "text/plain", "not found")
@@ -262,6 +275,8 @@ var CFG=[
  ["eyelidCloseLevel","Blink-close thresh",0.05,0.6,0.01],
  ["eyelidOpenInputAlpha","Eyelid smooth",0.05,1,0.01],
  ["eyelidBlinkHoldMs","Blink hold ms",0,400,10],
+ ["eyelidPoseSoftDeg","Pose soft (deg)",0,45,1],
+ ["eyelidPoseLimitDeg","Pose limit (deg)",10,90,1],
  ["gazeYOffset","Gaze Y offset",-0.3,0.3,0.01]
 ];
 var BOOLS=[["useEyeGaze","Use eye gaze"]];
@@ -306,7 +321,11 @@ function buildCfg(cur){
 var MODES=["FOLLOW","PUPPET","IDLE","SLEEP"];
 function buildModes(){var m=document.getElementById("modes");
  MODES.forEach(function(x){var b=document.createElement("button");b.textContent=x;
-  b.onclick=function(){post("/mode",{mode:x});};b.id="m_"+x;m.appendChild(b);});}
+  b.onclick=function(){post("/mode",{mode:x});};b.id="m_"+x;m.appendChild(b);});
+ var rb=document.createElement("button");rb.textContent="⟲ defaults";rb.title="reset tuning to defaults";
+ rb.onclick=function(){if(confirm("Reset tuning to defaults?"))fetch("/reset",{method:"POST"}).then(function(){
+  setTimeout(function(){fetch("/config").then(function(r){return r.json();}).then(buildCfg);},300);});};
+ m.appendChild(rb);}
 function buildLegend(){var l=document.getElementById("legend");l.innerHTML="";
  SERIES.forEach(function(s){var sp=document.createElement("span");
   sp.style.color=s[1];sp.style.marginRight="12px";sp.textContent="● "+s[0];l.appendChild(sp);});}
@@ -357,6 +376,7 @@ function tick(){
    "<tr><td class='k'>pupil filtered</td><td>"+num(ani.pupil_filt_x,2)+", "+num(ani.pupil_filt_y,2)+"</td></tr>"+
    "<tr><td class='k'>eye open L/R</td><td>"+num(ani.eye_open_prob_l,2)+" / "+num(ani.eye_open_prob_r,2)+"</td></tr>"+
    "<tr><td class='k'>eye closed L/R</td><td>"+ani.eye_closed_l+" / "+ani.eye_closed_r+"</td></tr>"+
+   "<tr><td class='k'>pose reliability</td><td>"+num(ani.pose_reliability,2)+"</td></tr>"+
    "<tr><td class='k'>transport</td><td>"+d.transport_state+"</td></tr>"+
    "<tr><td class='k'>battery</td><td>"+num(d.battery_pct,0)+"%</td></tr>";
  }).catch(function(){setT("conn","no data");document.getElementById("conn").style.color="#e0843a";});

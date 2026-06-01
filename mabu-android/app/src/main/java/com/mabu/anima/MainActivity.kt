@@ -106,6 +106,63 @@ class MainActivity : AppCompatActivity() {
     private var streamingLlm: StreamingLlama? = null
     private var statusServer: StatusServer? = null
 
+    // Full-screen calibration prompt overlay (driven by POST /prompt). Lazily
+    // built; shows a big instruction, a phase/countdown line, and the upcoming
+    // poses so the user can plan ahead -- you can't read the PC while turning
+    // your head away from it.
+    private var calibOverlay: android.widget.LinearLayout? = null
+    private var calibTitleView: TextView? = null
+    private var calibPhaseView: TextView? = null
+    private var calibUpcomingView: TextView? = null
+
+    private fun showCalibrationPrompt(title: String, phase: String, upcoming: String) {
+        if (title.isBlank()) { calibOverlay?.visibility = android.view.View.GONE; return }
+        val ov = calibOverlay ?: android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.argb(238, 8, 10, 14))
+            setPadding(56, 56, 56, 56)
+            val t = TextView(this@MainActivity).apply {
+                textSize = 34f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            }
+            val p = TextView(this@MainActivity).apply {
+                textSize = 24f; setTextColor(Color.parseColor("#7fd0ff"))
+                gravity = Gravity.CENTER; setPadding(0, 28, 0, 28)
+            }
+            val u = TextView(this@MainActivity).apply {
+                textSize = 17f; setTextColor(Color.parseColor("#8a93a6")); gravity = Gravity.CENTER
+            }
+            val ready = android.widget.Button(this@MainActivity).apply {
+                text = "READY ▶"
+                textSize = 26f
+                setPadding(64, 28, 64, 28)
+                setOnClickListener {
+                    DeviceStats.bumpReady()
+                    calibPhaseView?.text = "got it ✓ — capturing…"
+                }
+            }
+            val close = TextView(this@MainActivity).apply {
+                text = "✕ close"
+                textSize = 15f; setTextColor(Color.parseColor("#6b7384"))
+                gravity = Gravity.CENTER; setPadding(0, 40, 0, 0)
+                // Escape hatch: always dismiss the overlay locally, so a leftover
+                // prompt or a dead harness can never trap the screen.
+                setOnClickListener { calibOverlay?.visibility = android.view.View.GONE }
+            }
+            addView(t); addView(p); addView(u); addView(ready); addView(close)
+            calibTitleView = t; calibPhaseView = p; calibUpcomingView = u
+            rootLayout.addView(this, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            calibOverlay = this
+        }
+        calibTitleView?.text = title
+        calibPhaseView?.text = phase
+        calibUpcomingView?.text = if (upcoming.isBlank()) "" else "Coming up:\n$upcoming"
+        ov.visibility = android.view.View.VISIBLE
+        ov.bringToFront()
+    }
+
     // Debug control receiver -- lets a host drive the app over ADB without
     // touching the screen. See registerDebugReceiver() for the action set.
     private var debugReceiver: BroadcastReceiver? = null
@@ -126,6 +183,28 @@ class MainActivity : AppCompatActivity() {
     // each tick from followX/Y + saccade + glance offsets.
     @Volatile private var targetX = 0.5f
     @Volatile private var targetY = 0.5f
+
+    // PUPPET velocity-extrapolation state. Each detection lands ~100 ms after
+    // the face actually moved -- by the time the tween reaches targetX, the
+    // face has moved further. We capture the previous target + timestamp so the
+    // renderer can project the target forward by (now - last_target_ts) * velocity
+    // and ease toward THAT instead of the stale value. Eliminates the systematic
+    // tracking lag without raising the detection rate.
+    private var prevTargetX = 0.5f
+    private var prevTargetY = 0.5f
+    private var prevTargetNeckRot = 50f
+    private var prevTargetNeckElev = 50f
+    private var prevTargetNeckTilt = 50f
+    private var lastTargetUpdateMs = 0L
+    private var prevTargetUpdateMs = 0L
+
+    // FOLLOW's detection-driven inputs (face center -> followX/Y) get the same
+    // velocity-extrapolation treatment as PUPPET so the rendered eyes don't
+    // trail the user by a detection cycle.
+    private var prevFollowX = 0.5f
+    private var prevFollowY = 0.5f
+    private var lastFollowUpdateMs = 0L
+    private var prevFollowUpdateMs = 0L
     @Volatile private var followX = 0.5f
     @Volatile private var followY = 0.5f
     @Volatile private var saccadeOffsetX = 0f
@@ -276,6 +355,8 @@ class MainActivity : AppCompatActivity() {
                 put("eyelidCloseLevel", tuning.eyelidCloseLevel)
                 put("eyelidOpenInputAlpha", tuning.eyelidOpenInputAlpha)
                 put("eyelidBlinkHoldMs", tuning.eyelidBlinkHoldMs)
+                put("eyelidPoseSoftDeg", tuning.eyelidPoseSoftDeg)
+                put("eyelidPoseLimitDeg", tuning.eyelidPoseLimitDeg)
                 put("gazeYOffset", tuning.gazeYOffset)
                 put("useEyeGaze", tuning.useEyeGaze)
                 put("blinkMethod", tuning.blinkMethod)
@@ -293,6 +374,17 @@ class MainActivity : AppCompatActivity() {
                     val m = runCatching { Mode.valueOf(mode.uppercase()) }.getOrNull()
                     if (m != null) this@MainActivity.setMode(m)
                 }
+            }
+            override fun resetConfig() {
+                handler.post {
+                    tuning.reset()
+                    tuning.save(getSharedPreferences("tuning", MODE_PRIVATE))
+                    DeviceStats.blinkMethod = tuning.blinkMethod
+                    runCatching { settingsPanel.rebuildAfterPreset() }
+                }
+            }
+            override fun showPrompt(title: String, phase: String, upcoming: String) {
+                handler.post { showCalibrationPrompt(title, phase, upcoming) }
             }
         }).also { it.start() }
 
@@ -782,12 +874,20 @@ class MainActivity : AppCompatActivity() {
                 tuning.enableGlances = true
                 targetNeckRot = 50f; targetNeckElev = 50f; targetNeckTilt = 50f
                 resetEyelidsToNeutral()
+                // Reset velocity extrapolator -- previous session's velocity
+                // isn't meaningful for the new one.
+                lastFollowUpdateMs = 0L
+                prevFollowUpdateMs = 0L
             }
             Mode.PUPPET -> {
                 tuning.blinkMethod = "mirror"
                 tuning.enableSaccades = false
                 tuning.enableGlances = false
                 // puppet path will continuously drive eyes / neck / eyelids
+                // Reset extrapolator so the first detection doesn't project
+                // against stale velocity from the previous PUPPET session.
+                lastTargetUpdateMs = 0L
+                prevTargetUpdateMs = 0L
             }
             Mode.IDLE -> {
                 tuning.blinkMethod = "spontaneous"
@@ -835,6 +935,8 @@ class MainActivity : AppCompatActivity() {
             "eyelidCloseLevel"     -> f?.let { tuning.eyelidCloseLevel = it.coerceIn(0f, 1f) }
             "eyelidOpenInputAlpha" -> f?.let { tuning.eyelidOpenInputAlpha = it.coerceIn(0.02f, 1f) }
             "eyelidBlinkHoldMs"    -> v.toIntOrNull()?.let { tuning.eyelidBlinkHoldMs = it.coerceIn(0, 1000) }
+            "eyelidPoseSoftDeg"    -> f?.let { tuning.eyelidPoseSoftDeg = it.coerceIn(0f, 60f) }
+            "eyelidPoseLimitDeg"   -> f?.let { tuning.eyelidPoseLimitDeg = it.coerceIn(5f, 90f) }
             "gazeYOffset"          -> f?.let { tuning.gazeYOffset = it.coerceIn(-0.5f, 0.5f) }
             "useEyeGaze"           -> tuning.useEyeGaze = (v == "true" || v == "1")
             "blinkMethod"          -> if (v in setOf("spontaneous", "mirror", "both", "none")) tuning.blinkMethod = v
@@ -852,12 +954,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun startCamera() {
         val analyzer = FaceAnalyzer { result ->
+            DeviceStats.facePresent = result.faces.isNotEmpty()
             if (result.faces.isNotEmpty()) {
                 overlayView.setResult(result, isFrontFacing = true)
                 lastOverlayFaceMs = SystemClock.uptimeMillis()
             } else if (SystemClock.uptimeMillis() - lastOverlayFaceMs > HOLD_OVERLAY_MS) {
                 overlayView.setResult(result, isFrontFacing = true)
             }
+            // Raw-sensing telemetry for calibration -- fed in ALL modes so the
+            // sense-capture protocol works regardless of what mode is active.
+            feedSensingTelemetry(result)
             when (mode) {
                 Mode.FOLLOW -> updateFollowFrom(result)
                 Mode.PUPPET -> updatePuppetFrom(result)
@@ -945,6 +1051,10 @@ class MainActivity : AppCompatActivity() {
         val a = tuning.emaAlpha
         fxSmooth = a * cx + (1f - a) * fxSmooth
         fySmooth = a * cy + (1f - a) * fySmooth
+        prevFollowX = followX
+        prevFollowY = followY
+        prevFollowUpdateMs = lastFollowUpdateMs
+        lastFollowUpdateMs = now
         writeFollowTarget()
     }
 
@@ -967,9 +1077,40 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- PUPPET mode ---------------------------------------------------
 
+    /** Mirror the raw ML Kit sensing to DeviceStats for every mode, so the
+     *  calibration sense-capture sees head angles, pupil offset, eye-open and
+     *  face position without depending on PUPPET/mirror being active. */
+    private fun feedSensingTelemetry(result: FaceResult) {
+        val face = result.faces.firstOrNull() ?: return
+        DeviceStats.headYaw = face.headEulerAngleY
+        DeviceStats.headPitch = face.headEulerAngleX
+        DeviceStats.headRoll = face.headEulerAngleZ
+        DeviceStats.eyeOpenProbL = face.leftEyeOpenProbability ?: -1f
+        DeviceStats.eyeOpenProbR = face.rightEyeOpenProbability ?: -1f
+        pupilAverage(result.gaze)?.let { DeviceStats.pupilRawX = it.x; DeviceStats.pupilRawY = it.y }
+        val w = result.imageWidth.toFloat()
+        val h = result.imageHeight.toFloat()
+        if (w > 0f && h > 0f) {
+            val bb = face.boundingBox
+            DeviceStats.faceCenterX = bb.exactCenterX() / w
+            DeviceStats.faceCenterY = bb.exactCenterY() / h
+            DeviceStats.faceWidthFrac = bb.width() / w
+        }
+    }
+
     private fun updatePuppetFrom(result: FaceResult) {
         val face = result.faces.firstOrNull() ?: return
-        lastFaceSeenMs = SystemClock.uptimeMillis()
+        val now = SystemClock.uptimeMillis()
+        lastFaceSeenMs = now
+        // Snapshot the current target as prev *before* we overwrite it -- the
+        // tween extrapolator reads velocity from (target - prev) / (this_ts - prev_ts).
+        prevTargetX = targetX
+        prevTargetY = targetY
+        prevTargetNeckRot = targetNeckRot
+        prevTargetNeckElev = targetNeckElev
+        prevTargetNeckTilt = targetNeckTilt
+        prevTargetUpdateMs = lastTargetUpdateMs
+        lastTargetUpdateMs = now
 
         val yaw   = face.headEulerAngleY
         val pitch = face.headEulerAngleX
@@ -1043,8 +1184,18 @@ class MainActivity : AppCompatActivity() {
         val coupling = tuning.eyelidCoupling
         val bothEngaged = oL < tuning.eyelidWinkOpen && oR < tuning.eyelidWinkOpen
         val joint = minOf(oL, oR)
-        val effL = if (bothEngaged) oL + (joint - oL) * coupling else oL
-        val effR = if (bothEngaged) oR + (joint - oR) * coupling else oR
+        val cL = if (bothEngaged) oL + (joint - oL) * coupling else oL
+        val cR = if (bothEngaged) oR + (joint - oR) * coupling else oR
+        // Head-pose reliability gate: as the head turns, the far eye shrinks /
+        // occludes and its open-prob falsely drops, so bias openness back toward
+        // open -- linearly from PoseSoftDeg up to fully-open at PoseLimitDeg.
+        // Stops "winks when looking away" without touching forward-facing blinks.
+        val poseOff = maxOf(kotlin.math.abs(face.headEulerAngleY), kotlin.math.abs(face.headEulerAngleX))
+        val span = (tuning.eyelidPoseLimitDeg - tuning.eyelidPoseSoftDeg).coerceAtLeast(0.1f)
+        val rel = (1f - (poseOff - tuning.eyelidPoseSoftDeg) / span).coerceIn(0f, 1f)
+        val effL = cL * rel + (1f - rel)
+        val effR = cR * rel + (1f - rel)
+        DeviceStats.eyelidPoseRel = rel
         val a = tuning.eyelidOpenInputAlpha
         if (!eyeOpenInit) {
             eyeOpenSmoothL = effL; eyeOpenSmoothR = effR; eyeOpenInit = true
@@ -1117,8 +1268,26 @@ class MainActivity : AppCompatActivity() {
                 // animation offsets. PUPPET sets targetX/Y directly in
                 // updatePuppetFrom and bypasses this composition.
                 if (mode == Mode.FOLLOW || mode == Mode.IDLE) {
-                    targetX = (followX + saccadeOffsetX + glanceOffsetX).coerceIn(0f, 1f)
-                    targetY = (followY + saccadeOffsetY + glanceOffsetY).coerceIn(0f, 1f)
+                    // FOLLOW: project followX/Y forward by detection-velocity so
+                    // the composed eye target tracks where the face *probably is
+                    // now*, not where it was at the last detection. IDLE has no
+                    // detection-driven follow (face is ignored) so extrapolation
+                    // is a no-op there -- the velocity stays at whatever it was
+                    // when we left FOLLOW, but k = 0 / divide-by-zero guards keep
+                    // it from running away. Saccade + glance offsets are added
+                    // on top; they're already continuously animated.
+                    var fx = followX
+                    var fy = followY
+                    if (mode == Mode.FOLLOW && lastFollowUpdateMs > 0L && prevFollowUpdateMs > 0L) {
+                        val detDt = (lastFollowUpdateMs - prevFollowUpdateMs).coerceAtLeast(1L)
+                        val elapsed = (SystemClock.uptimeMillis() - lastFollowUpdateMs)
+                            .coerceIn(0L, PUPPET_EXTRAP_MAX_MS.coerceAtMost(detDt))
+                        val k = elapsed.toFloat() / detDt
+                        fx = (followX + (followX - prevFollowX) * k).coerceIn(0f, 1f)
+                        fy = (followY + (followY - prevFollowY) * k).coerceIn(0f, 1f)
+                    }
+                    targetX = (fx + saccadeOffsetX + glanceOffsetX).coerceIn(0f, 1f)
+                    targetY = (fy + saccadeOffsetY + glanceOffsetY).coerceIn(0f, 1f)
                 }
                 // Hardware mount calibration: the camera sits slightly off
                 // from the robot's eye axis, so we bias every eye target
@@ -1129,11 +1298,36 @@ class MainActivity : AppCompatActivity() {
                 val effectiveTargetY = (targetY - tuning.gazeYOffset).coerceIn(0f, 1f)
                 val eyesA = tuning.smoothAlphaEyes
                 val neckA = tuning.smoothAlphaNeck
-                currentX += (targetX - currentX) * eyesA
-                currentY += (effectiveTargetY - currentY) * eyesA
-                currentNeckRot  += (targetNeckRot  - currentNeckRot ) * neckA
-                currentNeckElev += (targetNeckElev - currentNeckElev) * neckA
-                currentNeckTilt += (targetNeckTilt - currentNeckTilt) * neckA
+
+                // PUPPET only: project the eye + neck targets forward by
+                // (now - last_detection) * detection-velocity so the renderer
+                // chases where the face probably is now, not where it was
+                // ~100 ms ago. Capped at PUPPET_EXTRAP_MAX_MS and at the
+                // inter-detection gap so a dropped/slow detection can't run
+                // away; first-detection guards keep prediction off until we
+                // have two timestamps to compute velocity from.
+                var eyeTargetX = targetX
+                var eyeTargetY = effectiveTargetY
+                var neckTargetR = targetNeckRot
+                var neckTargetE = targetNeckElev
+                var neckTargetT = targetNeckTilt
+                if (mode == Mode.PUPPET && lastTargetUpdateMs > 0L && prevTargetUpdateMs > 0L) {
+                    val detDt = (lastTargetUpdateMs - prevTargetUpdateMs).coerceAtLeast(1L)
+                    val elapsed = (SystemClock.uptimeMillis() - lastTargetUpdateMs)
+                        .coerceIn(0L, PUPPET_EXTRAP_MAX_MS.coerceAtMost(detDt))
+                    val k = elapsed.toFloat() / detDt
+                    eyeTargetX  = (targetX         + (targetX        - prevTargetX)        * k).coerceIn(0f, 1f)
+                    eyeTargetY  = (effectiveTargetY + (targetY       - prevTargetY)        * k).coerceIn(0f, 1f)
+                    neckTargetR = targetNeckRot   + (targetNeckRot   - prevTargetNeckRot)  * k
+                    neckTargetE = targetNeckElev  + (targetNeckElev  - prevTargetNeckElev) * k
+                    neckTargetT = targetNeckTilt  + (targetNeckTilt  - prevTargetNeckTilt) * k
+                }
+
+                currentX += (eyeTargetX  - currentX) * eyesA
+                currentY += (eyeTargetY  - currentY) * eyesA
+                currentNeckRot  += (neckTargetR - currentNeckRot ) * neckA
+                currentNeckElev += (neckTargetE - currentNeckElev) * neckA
+                currentNeckTilt += (neckTargetT - currentNeckTilt) * neckA
 
                 val eyesChanged =
                     kotlin.math.abs(currentX - lastSentX) > GAZE_EPSILON ||
@@ -1487,6 +1681,11 @@ class MainActivity : AppCompatActivity() {
         private const val HOLD_OVERLAY_MS = 500L
 
         private const val GAZE_TICK_MS = 40L
+        /** PUPPET velocity-extrapolation horizon. Cap on how far forward the
+         *  tween will project a target from the last detection. ~ one detection
+         *  interval -- enough to close the detection-latency gap, short enough
+         *  that a dropped detection just stalls instead of running away. */
+        private const val PUPPET_EXTRAP_MAX_MS = 120L
         private const val GAZE_EPSILON = 0.003f
         private const val NECK_EPSILON = 0.5f
         // Eyelid render tween (25 Hz). Detection thresholds + coupling +

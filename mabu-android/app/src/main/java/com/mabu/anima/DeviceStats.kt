@@ -29,7 +29,6 @@ object DeviceStats {
     private val mlkitMaxFrameTimeUs = AtomicLong(0L)
     private var lastMlkitFrames = 0
     private var lastMlkitFrameTimeUs = 0L
-    private var lastMlkitWindowMs = startMs
 
     // ML Kit fast path (bbox + tracking ID only). Runs in parallel with the
     // full detector; the experiment is to see whether bbox can be returned
@@ -69,7 +68,30 @@ object DeviceStats {
     // (deadbands should keep it near 0) is the most direct jitter proxy.
     private val motorCmds = AtomicLong(0L)
     private var lastMotorCmds = 0L
-    private var lastMotorWindowMs = startMs
+
+    // Calibration "READY" handshake: the on-device overlay button bumps this;
+    // the PC harness polls it to advance self-paced (no countdown to nail).
+    private val readySeq = AtomicInteger(0)
+    fun bumpReady() { readySeq.incrementAndGet() }
+
+    // Stable rate window. All windowed figures (mlkit/bbox fps, motor cmd Hz)
+    // are recomputed at most once per RATE_WINDOW_MS and cached between, so they
+    // don't fluctuate with poll cadence or get chopped across concurrent
+    // pollers (HUD + browser + PC monitor all call snapshot). Battery is a
+    // binder IPC; cache it and refresh infrequently so we never do an IPC under
+    // the snapshot lock on every poll (that caused brief telemetry stalls).
+    private val RATE_WINDOW_MS = 1000L
+    private val BATTERY_WINDOW_MS = 5000L
+    private var lastRateWindowMs = startMs
+    private var cachedMlkitFps = 0f
+    private var cachedMlkitMeanMs = 0f
+    private var cachedMlkitMaxMs = 0f
+    private var cachedBboxFps = 0f
+    private var cachedBboxMeanMs = 0f
+    private var cachedMotorHz = 0f
+    private var lastBatteryMs = 0L
+    private var cachedBatteryPct = -1
+    private var cachedBatteryTempC = Float.NaN
 
     // Animation pipeline values (PUPPET). Raw = straight from ML Kit (noisy);
     // these let the PC see where jitter enters vs the filtered/target values.
@@ -80,10 +102,22 @@ object DeviceStats {
     @Volatile var pupilRawY = 0f
     @Volatile var pupilFiltX = 0f
     @Volatile var pupilFiltY = 0f
+    // Face bounding-box center + size in the (rotated) image, normalized 0..1.
+    // The FOLLOW screen-space signal; lets calibration see the raw face position.
+    @Volatile var faceCenterX = 0.5f
+    @Volatile var faceCenterY = 0.5f
+    @Volatile var faceWidthFrac = 0f
     @Volatile var eyeOpenProbL = -1f
     @Volatile var eyeOpenProbR = -1f
     @Volatile var eyeClosedL = false
     @Volatile var eyeClosedR = false
+    // True while a face is currently detected. Distinct from the held sensor
+    // values (which keep their last reading on loss) -- this is the honest
+    // "is there a face right now" signal the calibration harness gates on.
+    @Volatile var facePresent = false
+    // Head-pose eyelid reliability: 1 = facing forward (probs trusted),
+    // 0 = turned past the limit (lids forced open to avoid false closure).
+    @Volatile var eyelidPoseRel = 1f
     // Tween targets (0..100) the renderer is easing toward.
     @Volatile var targetEyesLR = 50f
     @Volatile var targetEyesUD = 50f
@@ -152,72 +186,71 @@ object DeviceStats {
         val batteryTempC: Float,
     )
 
-    /** Take a snapshot and roll the ML Kit FPS window forward. Call from
-     *  the HUD tick or the HTTP endpoint -- not from the hot path. */
+    /** Take a snapshot. Windowed rates are recomputed at most every
+     *  RATE_WINDOW_MS and cached, so calling this at any cadence (or from
+     *  several pollers at once) returns stable figures. Cheap and lock-light:
+     *  no per-call binder IPC. */
     @Synchronized
     fun snapshot(ctx: Context?): Snapshot {
         val now = SystemClock.uptimeMillis()
-        val frames = mlkitFrames.get()
-        val frameTimeUs = mlkitFrameTimeUs.get()
-        val maxUs = mlkitMaxFrameTimeUs.getAndSet(0L)
+        val totalFrames = mlkitFrames.get()
+        val totalBbox = bboxFrames.get()
 
-        val dFrames = frames - lastMlkitFrames
-        val dTimeUs = frameTimeUs - lastMlkitFrameTimeUs
-        val dWindowMs = (now - lastMlkitWindowMs).coerceAtLeast(1L)
-        lastMlkitFrames = frames
-        lastMlkitFrameTimeUs = frameTimeUs
-        lastMlkitWindowMs = now
+        // Recompute all windowed rates together, at most once per window.
+        val dWindowMs = now - lastRateWindowMs
+        if (dWindowMs >= RATE_WINDOW_MS) {
+            val frameTimeUs = mlkitFrameTimeUs.get()
+            val dFrames = totalFrames - lastMlkitFrames
+            val dTimeUs = frameTimeUs - lastMlkitFrameTimeUs
+            cachedMlkitFps = if (dFrames > 0) dFrames * 1000f / dWindowMs else 0f
+            cachedMlkitMeanMs = if (dFrames > 0) (dTimeUs / dFrames) / 1000f else 0f
+            cachedMlkitMaxMs = mlkitMaxFrameTimeUs.getAndSet(0L) / 1000f
+            lastMlkitFrames = totalFrames
+            lastMlkitFrameTimeUs = frameTimeUs
 
-        val fps = if (dFrames > 0) dFrames * 1000f / dWindowMs else 0f
-        val meanMs = if (dFrames > 0) (dTimeUs / dFrames) / 1000f else 0f
-        val maxMs = maxUs / 1000f
+            val bTimeUs = bboxFrameTimeUs.get()
+            val dB = totalBbox - lastBboxFrames
+            val dBTimeUs = bTimeUs - lastBboxFrameTimeUs
+            cachedBboxFps = if (dB > 0) dB * 1000f / dWindowMs else 0f
+            cachedBboxMeanMs = if (dB > 0) (dBTimeUs / dB) / 1000f else 0f
+            lastBboxFrames = totalBbox
+            lastBboxFrameTimeUs = bTimeUs
 
-        // Bbox-only path: share the same window cadence.
-        val bFrames = bboxFrames.get()
-        val bTimeUs = bboxFrameTimeUs.get()
-        val dBFrames = bFrames - lastBboxFrames
-        val dBTimeUs = bTimeUs - lastBboxFrameTimeUs
-        lastBboxFrames = bFrames
-        lastBboxFrameTimeUs = bTimeUs
-        val bboxFps = if (dBFrames > 0) dBFrames * 1000f / dWindowMs else 0f
-        val bboxMean = if (dBFrames > 0) (dBTimeUs / dBFrames) / 1000f else 0f
+            val cmds = motorCmds.get()
+            cachedMotorHz = (cmds - lastMotorCmds) * 1000f / dWindowMs
+            lastMotorCmds = cmds
 
-        // Windowed motor-command rate over the same call cadence.
-        val cmds = motorCmds.get()
-        val dCmds = cmds - lastMotorCmds
-        val dMotorWindowMs = (now - lastMotorWindowMs).coerceAtLeast(1L)
-        lastMotorCmds = cmds
-        lastMotorWindowMs = now
-        val motorHz = if (dCmds > 0) dCmds * 1000f / dMotorWindowMs else 0f
+            lastRateWindowMs = now
+        }
 
-        val rt = Runtime.getRuntime()
-        val heapUsed = ((rt.totalMemory() - rt.freeMemory()) / (1024 * 1024)).toInt()
-        val heapMax = (rt.maxMemory() / (1024 * 1024)).toInt()
-
-        var batteryPct = -1
-        var batteryTempC = Float.NaN
-        if (ctx != null) {
+        // Battery is a binder IPC -- refresh it on its own slow cadence, cached.
+        if (ctx != null && (now - lastBatteryMs >= BATTERY_WINDOW_MS || lastBatteryMs == 0L)) {
             try {
                 val intent = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
                 if (intent != null) {
                     val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
                     val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
-                    if (level >= 0 && scale > 0) batteryPct = (level * 100 / scale)
+                    if (level >= 0 && scale > 0) cachedBatteryPct = (level * 100 / scale)
                     val tempTenths = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
-                    if (tempTenths != Int.MIN_VALUE) batteryTempC = tempTenths / 10f
+                    if (tempTenths != Int.MIN_VALUE) cachedBatteryTempC = tempTenths / 10f
                 }
-            } catch (_: Throwable) { /* HUD shouldn't crash on a battery read */ }
+            } catch (_: Throwable) { /* never crash a poll on a battery read */ }
+            lastBatteryMs = now
         }
+
+        val rt = Runtime.getRuntime()
+        val heapUsed = ((rt.totalMemory() - rt.freeMemory()) / (1024 * 1024)).toInt()
+        val heapMax = (rt.maxMemory() / (1024 * 1024)).toInt()
 
         return Snapshot(
             uptimeSec = (now - startMs) / 1000,
-            mlkitFps = fps,
-            mlkitMeanMs = meanMs,
-            mlkitMaxMs = maxMs,
-            mlkitTotalFrames = frames,
-            bboxFps = bboxFps,
-            bboxMeanMs = bboxMean,
-            bboxTotalFrames = bFrames,
+            mlkitFps = cachedMlkitFps,
+            mlkitMeanMs = cachedMlkitMeanMs,
+            mlkitMaxMs = cachedMlkitMaxMs,
+            mlkitTotalFrames = totalFrames,
+            bboxFps = cachedBboxFps,
+            bboxMeanMs = cachedBboxMeanMs,
+            bboxTotalFrames = totalBbox,
             videoSendingKbps = videoSendingKbps,
             videoSendingFps = videoSendingFps,
             videoRttMs = videoRttMs,
@@ -227,11 +260,11 @@ object DeviceStats {
             camEnabled = camEnabled,
             motorLinkOpen = motorLinkOpen,
             mode = mode,
-            motorCmdHz = motorHz,
+            motorCmdHz = cachedMotorHz,
             heapUsedMb = heapUsed,
             heapMaxMb = heapMax,
-            batteryPct = batteryPct,
-            batteryTempC = batteryTempC,
+            batteryPct = cachedBatteryPct,
+            batteryTempC = cachedBatteryTempC,
         )
     }
 
@@ -253,6 +286,7 @@ object DeviceStats {
         put("cam_enabled", camEnabled)
         put("motor_link_open", motorLinkOpen)
         put("mode", mode)
+        put("ready_seq", readySeq.get())
         put("heap_used_mb", heapUsedMb)
         put("heap_max_mb", heapMaxMb)
         put("battery_pct", batteryPct)
@@ -281,10 +315,15 @@ object DeviceStats {
             put("pupil_raw_y", round2(pupilRawY))
             put("pupil_filt_x", round2(pupilFiltX))
             put("pupil_filt_y", round2(pupilFiltY))
+            put("face_center_x", round2(faceCenterX))
+            put("face_center_y", round2(faceCenterY))
+            put("face_width_frac", round2(faceWidthFrac))
             put("eye_open_prob_l", if (eyeOpenProbL < 0f) JSONObject.NULL else round2(eyeOpenProbL))
             put("eye_open_prob_r", if (eyeOpenProbR < 0f) JSONObject.NULL else round2(eyeOpenProbR))
             put("eye_closed_l", eyeClosedL)
             put("eye_closed_r", eyeClosedR)
+            put("face_present", facePresent)
+            put("pose_reliability", round2(eyelidPoseRel))
             put("target_eyes_lr", round1(targetEyesLR))
             put("target_eyes_ud", round1(targetEyesUD))
             put("target_neck_rot", round1(targetNeckRot))

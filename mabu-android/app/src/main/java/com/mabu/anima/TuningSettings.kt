@@ -77,6 +77,12 @@ class TuningSettings {
     /** Low-pass on eye openness for smooth PARTIAL closure (squint). Separate
      *  from the blink latch, which bypasses it for crisp full blinks. */
     var eyelidOpenInputAlpha = 0.45f
+    /** Head-pose reliability gate. As |yaw| or |pitch| grows past PoseSoftDeg
+     *  the far eye shrinks/occludes and ML Kit's eye-open prob falsely drops
+     *  (reads as closing), so the lids are biased back toward open -- fully so
+     *  by PoseLimitDeg. Stops the "winks when looking away" artifact. */
+    var eyelidPoseSoftDeg  = 15f
+    var eyelidPoseLimitDeg = 32f
 
     /** Pico TTS ignores its own volume param so we set STREAM_MUSIC directly.
      *  On Mabu's speaker 0.2-0.3 is comfortable. Physical volume buttons on
@@ -128,6 +134,8 @@ class TuningSettings {
         eyelidCloseLevel   = prefs.getFloat("eyelidCloseLevel",   eyelidCloseLevel)
         eyelidBlinkHoldMs  = prefs.getInt("eyelidBlinkHoldMs",    eyelidBlinkHoldMs)
         eyelidOpenInputAlpha = prefs.getFloat("eyelidOpenInputAlpha", eyelidOpenInputAlpha)
+        eyelidPoseSoftDeg  = prefs.getFloat("eyelidPoseSoftDeg",  eyelidPoseSoftDeg)
+        eyelidPoseLimitDeg = prefs.getFloat("eyelidPoseLimitDeg", eyelidPoseLimitDeg)
         ttsVolume          = prefs.getFloat("ttsVolume",          ttsVolume)
         neckFollowGain     = prefs.getFloat("neckFollowGain",     neckFollowGain)
         cognitionMode      = prefs.getString("cognitionMode",     cognitionMode) ?: cognitionMode
@@ -165,6 +173,8 @@ class TuningSettings {
             putFloat("eyelidCloseLevel",   eyelidCloseLevel)
             putInt("eyelidBlinkHoldMs",    eyelidBlinkHoldMs)
             putFloat("eyelidOpenInputAlpha", eyelidOpenInputAlpha)
+            putFloat("eyelidPoseSoftDeg",  eyelidPoseSoftDeg)
+            putFloat("eyelidPoseLimitDeg", eyelidPoseLimitDeg)
             putFloat("ttsVolume",          ttsVolume)
             putFloat("neckFollowGain",     neckFollowGain)
             putString("cognitionMode",     cognitionMode)
@@ -205,9 +215,16 @@ class TuningSettings {
         eyelidCloseLevel   = 0.30f
         eyelidBlinkHoldMs  = 120
         eyelidOpenInputAlpha = 0.45f
+        eyelidPoseSoftDeg  = 15f
+        eyelidPoseLimitDeg = 32f
         ttsVolume          = 0.22f
         neckFollowGain     = 0.4f
-        cognitionMode      = "streaming"
+        // NOTE: cognitionMode intentionally NOT reset. Resetting it to
+        // "streaming" silently put users back on the legacy RemoteAsr/RemoteTts
+        // path (which historically had the "Mabu" hotword bias and weaker AEC)
+        // when they hit "Reset tuning" -- and they wouldn't see it happen.
+        // It's a stack choice, not a behavioral knob, so it stays where the
+        // user put it. The dedicated [resetAll] is still the nuclear option.
         llmServerUrl       = "http://10.0.0.49:8080"
         asrServerUrl       = "ws://10.0.0.49:9090"
         ttsServerUrl       = "http://10.0.0.49:8123"
@@ -217,6 +234,11 @@ class TuningSettings {
     /** Nuclear reset: blow away calibration too. Use only when re-installing. */
     fun resetAll() {
         reset()
+        // resetAll is the "factory wipe" option, so it *does* reset the stack
+        // choice. New default is "pipecat" (better AEC + VAD + SmartTurn);
+        // historically this was "streaming" but that path's hotword bias hurts
+        // more than it helps, and pipecat is the preferred path now.
+        cognitionMode      = "pipecat"
         gazeYOffset        = 0.10f
         neckRotSign        = -1f
         neckElevSign       =  1f
