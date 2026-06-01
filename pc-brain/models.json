@@ -13,5 +13,12 @@
     "template": "",
     "stop": ["<|im_end|>"],
     "note": "Qwen 2.5 7B Instruct. Embedded template is good (ChatML family) -> --jinja."
+  },
+
+  "stheno": {
+    "file": "L3-8B-Stheno-v3.2-Q4_K_M.gguf",
+    "template": "",
+    "stop": ["<|eot_id|>"],
+    "note": "Sao10K L3-8B-Stheno-v3.2 -- decensored RP/character 8B (Llama-3). ~5GB vs Rocinante's 7.5GB, frees VRAM. Llama-3 template; <|eot_id|> is a NATIVE special token so it stops cleanly via --jinja (no leak like Rocinante)."
   }
 }

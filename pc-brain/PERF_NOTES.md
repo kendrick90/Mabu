@@ -3,6 +3,38 @@
 Symptom: sometimes you speak and get **no response**, or replies are slow / pause
 mid-sentence. This doc is how to investigate it fast and iterate to a fix.
 
+## UPDATE (2026-05-31, after fixes): the deeper root cause is a WhisperLive leak
+
+Swapped the LLM 12B -> **Stheno 8B** (`run-all.ps1 -Model stheno`): freed ~9 GB,
+LLM latency ~0.5 s, replies clean (Llama-3 `<|eot_id|>` stops natively). Baseline
+with the full stack + 1 device connection is now ~15 GB used / **~7-8 GB free**.
+
+But `bench.py` exposed the real culprit: **WhisperLive grows ~1.7 GB of VRAM per
+WebSocket connection and never releases it on disconnect.** Killing WhisperLive
+alone freed ~10.5 GB after 5 bench connections (a single large-v3-turbo needs
+~3 GB). `single_model` is on by default, yet each client still adds ~a model's
+worth — so either the flag isn't effective for the faster_whisper backend here,
+or per-client CTranslate2/CUDA runtime state isn't freed.
+
+**Why this is THE issue:** every reconnect spins a new STT connection — WiFi
+blip, the app's auto-reconnect, an app restart, each pipeline run. So VRAM
+climbs over a session until the GPU re-maxes -> dropped/slow responses + the
+"loading/unloading" feel. The 8B bought headroom (~5 reconnects of slack) but
+does NOT eliminate it.
+
+**Fix candidates (next):**
+1. Verify `single_model` actually shares the model for faster_whisper (check the
+   server's startup log / add `-sm`); if not effective, patch the server to free
+   per-client resources + `torch.cuda.empty_cache()` on disconnect.
+2. Reuse ONE WhisperLive connection in the pipecat bot across pipeline
+   runs/reconnects (module-level singleton in `whisperlive_stt.py`) instead of a
+   fresh connection each time -- caps connection-driven growth.
+3. Interim: `stop-all.ps1` + `run-all.ps1` between sessions fully releases it.
+
+bench.py STT note: it returned empty transcripts on synthetic TTS audio (likely
+WhisperLive's server VAD filtering it). Harness limitation, not production -- live
+device STT works. To benchmark STT, feed a real recorded clip or pass use_vad off.
+
 ## Confirmed root cause (2026-05-31)
 
 **The RTX 4090 is VRAM-maxed.** With Rocinante 12B (llama-server) + WhisperLive
