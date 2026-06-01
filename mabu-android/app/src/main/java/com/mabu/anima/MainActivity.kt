@@ -44,6 +44,13 @@ class MainActivity : AppCompatActivity() {
     private var pipecatState: ai.pipecat.client.types.TransportState? = null
     private var botSpeaking = false
     private var lastPipecatConnectMs = 0L              // throttle auto-reconnect attempts
+    // Debounced "bot finished speaking" -> drop to listening only after a real
+    // pause, so the status doesn't flicker between a reply's TTS sentences.
+    private val botSpeakingOff = Runnable {
+        botSpeaking = false
+        overlayView.setHeardText(null)
+        updatePipecatStatus()
+    }
     private lateinit var micButton: TextView
     private var muteButton: TextView? = null
 
@@ -478,13 +485,17 @@ class MainActivity : AppCompatActivity() {
             overlayView.setHeardText(text)   // speech bubble by the face
         }
         override fun onBotStartedSpeaking() {
+            handler.removeCallbacks(botSpeakingOff)   // cancel the inter-sentence timeout
             botSpeaking = true
             updatePipecatStatus()
         }
         override fun onBotStoppedSpeaking() {
-            botSpeaking = false
-            overlayView.setHeardText(null)   // clear the bubble after a turn
-            updatePipecatStatus()
+            // A reply is many TTS sentences; each one fires stop/start. Don't flash
+            // "listening" in the gaps between them (which get long when Chatterbox
+            // is slow synthesizing the next sentence). Only drop back to listening
+            // if no new sentence starts within the debounce window.
+            handler.removeCallbacks(botSpeakingOff)
+            handler.postDelayed(botSpeakingOff, 1200)
         }
         override fun onServerMessage(data: ai.pipecat.client.types.Value) {
             // PC->device control channel for agentic tools (set_mode, launch_app,
