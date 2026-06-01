@@ -130,6 +130,7 @@ class MinLengthTextAggregator(BaseTextAggregator):
         self._first_min = first_min_chars  # first chunk emits ASAP (snappy start)
         self._buf = ""
         self._first = True                 # first chunk of the current reply?
+        self.pending_final = False         # set True when the next emitted chunk is the reply's last (from flush)
 
     @property
     def text(self) -> Aggregation:
@@ -163,12 +164,16 @@ class MinLengthTextAggregator(BaseTextAggregator):
                 break  # complete portion too short -- keep buffering, don't cut mid-sentence
             self._buf = self._buf[cut:].lstrip(" ")
             self._first = False
+            self.pending_final = False   # mid-reply chunk, more may follow
             yield Aggregation(text=chunk, type=AggregationType.SENTENCE)
 
     async def flush(self):
         chunk = self._buf.strip(" ")
         self._buf = ""
         self._first = True   # next reply starts snappy again
+        # The flushed chunk is the LAST of the reply -> the TTS service pads it
+        # with trailing silence so end-of-stream tail-clipping eats silence, not words.
+        self.pending_final = bool(chunk)
         return Aggregation(text=chunk, type=AggregationType.SENTENCE) if chunk else None
 
     async def handle_interruption(self):
@@ -234,6 +239,15 @@ class ChatterboxTTSService(TTSService):
                         yield TTSAudioRawFrame(
                             audio=chunk, sample_rate=self.sample_rate, num_channels=1
                         )
+            # If this is the LAST chunk of the reply, append trailing silence so
+            # end-of-stream tail-clipping on the device eats silence, not words.
+            if nbytes and getattr(self._text_aggregator, "pending_final", False):
+                self._text_aggregator.pending_final = False
+                pad = b"\x00\x00" * int(self.sample_rate * 0.8)   # 0.8s mono int16
+                for i in range(0, len(pad), 8192):
+                    yield TTSAudioRawFrame(
+                        audio=pad[i:i + 8192], sample_rate=self.sample_rate, num_channels=1
+                    )
         except Exception as e:
             logger.error(f"[chatterbox] synth failed: {e}")
         finally:
