@@ -124,10 +124,12 @@ class MinLengthTextAggregator(BaseTextAggregator):
     Sentences already >= min_chars pass straight through (no added latency); only
     short ones get combined. flush() emits the tail at end of turn."""
 
-    def __init__(self, min_chars: int = 80, **kwargs):
+    def __init__(self, min_chars: int = 80, first_min_chars: int = 1, **kwargs):
         super().__init__(**kwargs)
-        self._min = min_chars
+        self._min = min_chars              # batch size for the rest of a reply (smooth)
+        self._first_min = first_min_chars  # first chunk emits ASAP (snappy start)
         self._buf = ""
+        self._first = True                 # first chunk of the current reply?
 
     @property
     def text(self) -> Aggregation:
@@ -147,25 +149,35 @@ class MinLengthTextAggregator(BaseTextAggregator):
 
     async def aggregate(self, text: str):
         self._buf += text
-        while len(self._buf) >= self._min:
+        while True:
+            # First chunk of a reply uses a smaller threshold (snappier start);
+            # the rest batch to min_chars. Gate on the COMPLETE-sentence chunk
+            # length, not the raw buffer, so we never emit a tiny opener like
+            # "Hi!" (which would underrun -> gap) -- short sentences get combined.
+            target = self._first_min if self._first else self._min
             cut = self._last_sentence_end(self._buf)
             if cut is None:
-                break  # no sentence boundary yet -- keep buffering, don't cut mid-sentence
+                break  # no complete sentence yet -- keep buffering
             chunk = self._buf[:cut].strip(" ")
+            if len(chunk) < target:
+                break  # complete portion too short -- keep buffering, don't cut mid-sentence
             self._buf = self._buf[cut:].lstrip(" ")
-            if chunk:
-                yield Aggregation(text=chunk, type=AggregationType.SENTENCE)
+            self._first = False
+            yield Aggregation(text=chunk, type=AggregationType.SENTENCE)
 
     async def flush(self):
         chunk = self._buf.strip(" ")
         self._buf = ""
+        self._first = True   # next reply starts snappy again
         return Aggregation(text=chunk, type=AggregationType.SENTENCE) if chunk else None
 
     async def handle_interruption(self):
         self._buf = ""
+        self._first = True
 
     async def reset(self):
         self._buf = ""
+        self._first = True
 
 
 class ChatterboxTTSService(TTSService):
@@ -202,6 +214,8 @@ class ChatterboxTTSService(TTSService):
         logger.debug(f"[chatterbox] synth (voice={voice}): {text!r}")
         await self.start_ttfb_metrics()
         yield TTSStartedFrame()
+        import time as _time
+        t0 = _time.monotonic(); nbytes = 0
         try:
             timeout = aiohttp.ClientTimeout(total=60)
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -216,12 +230,20 @@ class ChatterboxTTSService(TTSService):
                         if first:
                             await self.stop_ttfb_metrics()
                             first = False
+                        nbytes += len(chunk)
                         yield TTSAudioRawFrame(
                             audio=chunk, sample_rate=self.sample_rate, num_channels=1
                         )
         except Exception as e:
             logger.error(f"[chatterbox] synth failed: {e}")
         finally:
+            # Real-time factor: synth wall-time / audio duration. RTF < 1 => synth
+            # outpaces playback (smooth); RTF > 1 => device runs dry => choppy gap.
+            synth = _time.monotonic() - t0
+            audio_s = (nbytes / 2) / self.sample_rate if nbytes else 0.0
+            rtf = (synth / audio_s) if audio_s else 0.0
+            flag = "  <<UNDERRUN" if rtf > 1.0 else ""
+            logger.info(f"[tts-rtf] chars={len(text)} audio={audio_s:.2f}s synth={synth:.2f}s rtf={rtf:.2f}{flag}")
             yield TTSStoppedFrame()
 
 
@@ -270,7 +292,7 @@ async def run_pipeline(transport):
     # Batch short sentences before synth so Chatterbox produces audio chunks long
     # enough to cover the next chunk's synth time -> no choppiness between tiny
     # sentences. Replaces the default per-sentence aggregator.
-    tts._text_aggregator = MinLengthTextAggregator(min_chars=80)
+    tts._text_aggregator = MinLengthTextAggregator(min_chars=80, first_min_chars=40)
 
     context = LLMContext(seed)
     aggregators = LLMContextAggregatorPair(
