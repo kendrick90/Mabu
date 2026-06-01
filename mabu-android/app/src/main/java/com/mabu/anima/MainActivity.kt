@@ -66,6 +66,8 @@ class MainActivity : AppCompatActivity() {
                     append("mlkit ").append("%.1f".format(s.mlkitFps)).append(" fps  ")
                     append("mean ").append("%.0f".format(s.mlkitMeanMs)).append("ms  ")
                     append("max ").append("%.0f".format(s.mlkitMaxMs)).append("ms\n")
+                    append("bbox  ").append("%.1f".format(s.bboxFps)).append(" fps  ")
+                    append("mean ").append("%.0f".format(s.bboxMeanMs)).append("ms\n")
                     append("video ").append(s.videoSendingFps).append(" fps  ")
                     append(s.videoSendingKbps).append(" kbps  ")
                     append("rtt ").append(s.videoRttMs).append("ms\n")
@@ -130,6 +132,12 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var saccadeOffsetY = 0f
     @Volatile private var glanceOffsetX = 0f
     @Volatile private var glanceOffsetY = 0f
+    // PUPPET eye-gaze input filter: the pupil dark-cluster heuristic is noisy
+    // frame-to-frame, so we low-pass the raw offset here (input smoothing,
+    // separate from the output tween) before mapping it to an eye target.
+    private var pupilFiltX = 0f
+    private var pupilFiltY = 0f
+    private var pupilFiltInit = false
     private var currentX = 0.5f
     private var currentY = 0.5f
     private var lastSentX = 0.5f
@@ -146,11 +154,21 @@ class MainActivity : AppCompatActivity() {
     private var lastSentNeckElev = 50f
     private var lastSentNeckTilt = 50f
 
-    // Eyelid (PUPPET direct write; FOLLOW via blink only). Tracked
-    // independently per side so each robot eyelid mirrors the matching
-    // user eye -- closing one eye in PUPPET winks just one robot eye.
+    // Eyelid mirroring. lastLdlValue/lastLdrValue are the rendered "current"
+    // lid positions tweened by renderEyelids at the 25 Hz tick; the per-eye
+    // closed state + blink-hold deadline are set by the Schmitt-trigger
+    // detector (maybeMirrorEyelids) at the camera rate. Per side so a wink
+    // mirrors one robot eye. (Main-thread only: both the face callback and the
+    // tick run on the main looper, so these need no synchronization.)
     private var lastLdlValue = MabuMotors.EYELID_NEUTRAL
     private var lastLdrValue = MabuMotors.EYELID_NEUTRAL
+    // Smoothed per-eye openness (0=shut..1=open) for partial closure; blink-
+    // hold deadlines force a full closure through a fast blink.
+    private var eyeOpenSmoothL = 1f
+    private var eyeOpenSmoothR = 1f
+    private var eyeOpenInit = false
+    private var blinkHoldLUntil = 0L
+    private var blinkHoldRUntil = 0L
 
     private var lastFaceSeenMs = 0L
     private var lastOverlayFaceMs = 0L
@@ -245,7 +263,38 @@ class MainActivity : AppCompatActivity() {
         ).apply { setMargins(16, 24, 0, 0) })
         handler.post(hudTick)
 
-        statusServer = StatusServer(applicationContext).also { it.start() }
+        statusServer = StatusServer(applicationContext, object : StatusServer.Hooks {
+            override fun configJson(): org.json.JSONObject = org.json.JSONObject().apply {
+                put("eyeGazeGain", tuning.eyeGazeGain)
+                put("eyeGazeInputAlpha", tuning.eyeGazeInputAlpha)
+                put("eyeGazeDeadband", tuning.eyeGazeDeadband)
+                put("smoothAlphaEyes", tuning.smoothAlphaEyes)
+                put("smoothAlphaNeck", tuning.smoothAlphaNeck)
+                put("neckAngleRange", tuning.neckAngleRange)
+                put("eyelidCoupling", tuning.eyelidCoupling)
+                put("eyelidWinkOpen", tuning.eyelidWinkOpen)
+                put("eyelidCloseLevel", tuning.eyelidCloseLevel)
+                put("eyelidOpenInputAlpha", tuning.eyelidOpenInputAlpha)
+                put("eyelidBlinkHoldMs", tuning.eyelidBlinkHoldMs)
+                put("gazeYOffset", tuning.gazeYOffset)
+                put("useEyeGaze", tuning.useEyeGaze)
+                put("blinkMethod", tuning.blinkMethod)
+            }
+            override fun applyConfig(params: Map<String, String>) {
+                handler.post {
+                    params.forEach { (k, v) -> applyTuning(k, v) }
+                    tuning.save(getSharedPreferences("tuning", MODE_PRIVATE))
+                    DeviceStats.blinkMethod = tuning.blinkMethod
+                    runCatching { settingsPanel.rebuildAfterPreset() }
+                }
+            }
+            override fun setMode(mode: String) {
+                handler.post {
+                    val m = runCatching { Mode.valueOf(mode.uppercase()) }.getOrNull()
+                    if (m != null) this@MainActivity.setMode(m)
+                }
+            }
+        }).also { it.start() }
 
         // Push-to-talk mic button along the bottom-center.
         micButton = TextView(this).apply {
@@ -765,8 +814,31 @@ class MainActivity : AppCompatActivity() {
                 )
             }
         }
+        DeviceStats.blinkMethod = tuning.blinkMethod
         settingsPanel.rebuildAfterPreset()
         Toast.makeText(this, "Mode: ${mode.name}", Toast.LENGTH_SHORT).show()
+    }
+
+    /** Apply one tunable from the web config UI (key -> raw string value).
+     *  Unknown keys are ignored; values are validated/parsed per type. */
+    private fun applyTuning(k: String, v: String) {
+        val f = v.toFloatOrNull()
+        when (k) {
+            "eyeGazeGain"          -> f?.let { tuning.eyeGazeGain = it }
+            "eyeGazeInputAlpha"    -> f?.let { tuning.eyeGazeInputAlpha = it.coerceIn(0.02f, 1f) }
+            "eyeGazeDeadband"      -> f?.let { tuning.eyeGazeDeadband = it.coerceIn(0f, 0.5f) }
+            "smoothAlphaEyes"      -> f?.let { tuning.smoothAlphaEyes = it.coerceIn(0.02f, 1f) }
+            "smoothAlphaNeck"      -> f?.let { tuning.smoothAlphaNeck = it.coerceIn(0.02f, 1f) }
+            "neckAngleRange"       -> f?.let { tuning.neckAngleRange = it.coerceIn(5f, 90f) }
+            "eyelidCoupling"       -> f?.let { tuning.eyelidCoupling = it.coerceIn(0f, 1f) }
+            "eyelidWinkOpen"       -> f?.let { tuning.eyelidWinkOpen = it.coerceIn(0f, 1f) }
+            "eyelidCloseLevel"     -> f?.let { tuning.eyelidCloseLevel = it.coerceIn(0f, 1f) }
+            "eyelidOpenInputAlpha" -> f?.let { tuning.eyelidOpenInputAlpha = it.coerceIn(0.02f, 1f) }
+            "eyelidBlinkHoldMs"    -> v.toIntOrNull()?.let { tuning.eyelidBlinkHoldMs = it.coerceIn(0, 1000) }
+            "gazeYOffset"          -> f?.let { tuning.gazeYOffset = it.coerceIn(-0.5f, 0.5f) }
+            "useEyeGaze"           -> tuning.useEyeGaze = (v == "true" || v == "1")
+            "blinkMethod"          -> if (v in setOf("spontaneous", "mirror", "both", "none")) tuning.blinkMethod = v
+        }
     }
 
     private fun resetEyelidsToNeutral() {
@@ -800,7 +872,12 @@ class MainActivity : AppCompatActivity() {
                 maybeMirrorEyelids(result)
             }
         }
-        cameraSource = Camera1Source(this, textureView, analyzer) { pw, ph, rot ->
+        // Experiment: bbox-only fast detector running in parallel. Doesn't drive
+        // anything yet -- DeviceStats records its FPS so we can compare against
+        // the full pipeline's FPS in the HUD / /status. Wire its bbox into
+        // FOLLOW later once the perf gap is confirmed.
+        val fastAnalyzer = FastFaceAnalyzer { /* result unused for now */ }
+        cameraSource = Camera1Source(this, textureView, analyzer, fastAnalyzer) { pw, ph, rot ->
             adjustPreviewAspect(pw, ph, rot)
         }
     }
@@ -905,42 +982,84 @@ class MainActivity : AppCompatActivity() {
         val gaze = result.gaze
         val avgPupil = pupilAverage(gaze)
         if (tuning.useEyeGaze && avgPupil != null) {
-            targetX = (0.5f + avgPupil.x * tuning.eyeGazeGain).coerceIn(0f, 1f)
-            targetY = (0.5f + avgPupil.y * tuning.eyeGazeGain).coerceIn(0f, 1f)
+            // 1) Low-pass the raw pupil offset (input smoothing). The dark-
+            //    cluster centroid jitters by several percent even when the
+            //    user holds still; without this it reaches the eyes as tremor.
+            if (!pupilFiltInit) {
+                pupilFiltX = avgPupil.x; pupilFiltY = avgPupil.y; pupilFiltInit = true
+            } else {
+                pupilFiltX += (avgPupil.x - pupilFiltX) * tuning.eyeGazeInputAlpha
+                pupilFiltY += (avgPupil.y - pupilFiltY) * tuning.eyeGazeInputAlpha
+            }
+            val tx = (0.5f + pupilFiltX * tuning.eyeGazeGain).coerceIn(0f, 1f)
+            val ty = (0.5f + pupilFiltY * tuning.eyeGazeGain).coerceIn(0f, 1f)
+            // 2) Fixation deadband: hold the current eye target unless the new
+            //    one moved enough to be a real gaze shift. Kills residual at-
+            //    rest jitter and reads as natural fixation (real eyes hold,
+            //    then saccade). The output tween still eases into any change,
+            //    so crossing the band doesn't snap.
+            if (kotlin.math.abs(tx - targetX) > tuning.eyeGazeDeadband) targetX = tx
+            if (kotlin.math.abs(ty - targetY) > tuning.eyeGazeDeadband) targetY = ty
         } else {
+            pupilFiltInit = false
             targetX = (0.5f + (yaw   * tuning.neckRotSign  / tuning.neckAngleRange) * 0.5f).coerceIn(0f, 1f)
             targetY = (0.5f + (pitch * tuning.neckElevSign / tuning.neckAngleRange) * 0.5f).coerceIn(0f, 1f)
         }
+
+        // Telemetry for the /status animation monitor: raw inputs, filtered
+        // pupil, and the resulting tween targets.
+        DeviceStats.headYaw = yaw; DeviceStats.headPitch = pitch; DeviceStats.headRoll = roll
+        avgPupil?.let { DeviceStats.pupilRawX = it.x; DeviceStats.pupilRawY = it.y }
+        DeviceStats.pupilFiltX = pupilFiltX; DeviceStats.pupilFiltY = pupilFiltY
+        DeviceStats.targetEyesLR = targetX * 100f
+        DeviceStats.targetEyesUD = targetY * 100f
+        DeviceStats.targetNeckRot = targetNeckRot
+        DeviceStats.targetNeckElev = targetNeckElev
+        DeviceStats.targetNeckTilt = targetNeckTilt
     }
 
     /**
-     * Eyelid mirroring (blinkMethod = "mirror" or "both"). Runs regardless
-     * of mode so you can mix it with FOLLOW or any other preset. Mapping
-     * is viewer-relative because that's what ML Kit returns on this build.
+     * Eyelid blink/squint DETECTION (blinkMethod = "mirror" or "both"). Runs
+     * per face frame (~10 fps). Does NOT drive the motors -- it updates the
+     * smoothed per-eye openness + blink-hold deadlines; the motion is rendered
+     * in the 25 Hz tick (renderEyelids) so it's smooth despite the camera rate.
+     *
+     * Coupling: ML Kit's per-eye probability is noisy and asymmetric, so a real
+     * two-eye blink often dips one eye below threshold while the other lags --
+     * which naive per-eye mirroring renders as a one-eyed wink. So if NEITHER
+     * eye is clearly open (both < eyelidWinkOpen) we treat it as a joint
+     * blink/squint and pull both toward the more-closed eye by eyelidCoupling.
+     * A deliberate wink keeps one eye clearly open, so it stays independent.
+     *
+     * Partial closure: the (coupled) openness is low-passed and mapped
+     * proportionally to lid position in renderEyelids -- a held half-close
+     * gives a steady squint. A fast dip below eyelidCloseLevel additionally
+     * latches a full closure so blinks stay crisp.
      */
     private fun maybeMirrorEyelids(result: FaceResult) {
         val face = result.faces.firstOrNull() ?: return
-        val lp = face.leftEyeOpenProbability  ?: 1f
-        val rp = face.rightEyeOpenProbability ?: 1f
-        // Cross-eye coupling: at c=0 each eyelid follows its own raw prob
-        // (false single-eye blinks slip through). At c=1 both follow the
-        // brighter prob (fully linked). Intermediate values let the clearer
-        // eye drag the noisier one up while still permitting deliberate
-        // winks (where BOTH probs change).
-        val c = tuning.eyelidCoupling
-        val brighter = maxOf(lp, rp)
-        val coupledL = lp * (1f - c) + brighter * c
-        val coupledR = rp * (1f - c) + brighter * c
-        val targetLdl = eyelidFromProb(coupledL)
-        val targetLdr = eyelidFromProb(coupledR)
-        val smoothedLdl = lastLdlValue + (targetLdl - lastLdlValue) * EYELID_ALPHA
-        val smoothedLdr = lastLdrValue + (targetLdr - lastLdrValue) * EYELID_ALPHA
-        if (kotlin.math.abs(smoothedLdl - lastLdlValue) > 1.5f ||
-            kotlin.math.abs(smoothedLdr - lastLdrValue) > 1.5f) {
-            motors.move(eyelidLeft = smoothedLdl, eyelidRight = smoothedLdr)
-            lastLdlValue = smoothedLdl
-            lastLdrValue = smoothedLdr
+        val oL = (face.leftEyeOpenProbability  ?: 1f).coerceIn(0f, 1f)
+        val oR = (face.rightEyeOpenProbability ?: 1f).coerceIn(0f, 1f)
+        val coupling = tuning.eyelidCoupling
+        val bothEngaged = oL < tuning.eyelidWinkOpen && oR < tuning.eyelidWinkOpen
+        val joint = minOf(oL, oR)
+        val effL = if (bothEngaged) oL + (joint - oL) * coupling else oL
+        val effR = if (bothEngaged) oR + (joint - oR) * coupling else oR
+        val a = tuning.eyelidOpenInputAlpha
+        if (!eyeOpenInit) {
+            eyeOpenSmoothL = effL; eyeOpenSmoothR = effR; eyeOpenInit = true
+        } else {
+            eyeOpenSmoothL += (effL - eyeOpenSmoothL) * a
+            eyeOpenSmoothR += (effR - eyeOpenSmoothR) * a
         }
+        val now = SystemClock.uptimeMillis()
+        // Latch on the pre-smoothing effective openness so a sharp dip fires
+        // immediately (the EMA would otherwise soften the blink edge).
+        if (effL < tuning.eyelidCloseLevel) blinkHoldLUntil = now + tuning.eyelidBlinkHoldMs
+        if (effR < tuning.eyelidCloseLevel) blinkHoldRUntil = now + tuning.eyelidBlinkHoldMs
+        DeviceStats.eyeOpenProbL = oL; DeviceStats.eyeOpenProbR = oR
+        DeviceStats.eyeClosedL = now < blinkHoldLUntil || eyeOpenSmoothL < tuning.eyelidCloseLevel
+        DeviceStats.eyeClosedR = now < blinkHoldRUntil || eyeOpenSmoothR < tuning.eyelidCloseLevel
     }
 
     private fun motorFromAngle(angleDeg: Float): Float =
@@ -958,10 +1077,35 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun eyelidFromProb(p: Float): Float {
-        val clamped = p.coerceIn(0f, 1f)
-        return MabuMotors.EYELID_CLOSED +
-            (MabuMotors.EYELID_OPEN - MabuMotors.EYELID_CLOSED) * clamped
+    /**
+     * Render the eyelids on the 25 Hz tick. Target is a full closure while the
+     * blink-hold is active (crisp blink), otherwise the smoothed openness
+     * mapped proportionally to lid position (partial closure / squint).
+     * Asymmetric tween (snappy close, softer reopen) + a deadband so a steady
+     * lid stops sending. Mirror modes only; else doBlink owns the lids.
+     */
+    private fun renderEyelids(now: Long) {
+        val tgtL = if (now < blinkHoldLUntil) MabuMotors.EYELID_CLOSED else openToLid(eyeOpenSmoothL)
+        val tgtR = if (now < blinkHoldRUntil) MabuMotors.EYELID_CLOSED else openToLid(eyeOpenSmoothR)
+        // tgt > current means closing (value rises toward CLOSED=90) -> fast.
+        val aL = if (tgtL > lastLdlValue) EYELID_CLOSE_ALPHA else EYELID_OPEN_ALPHA
+        val aR = if (tgtR > lastLdrValue) EYELID_CLOSE_ALPHA else EYELID_OPEN_ALPHA
+        val nL = lastLdlValue + (tgtL - lastLdlValue) * aL
+        val nR = lastLdrValue + (tgtR - lastLdrValue) * aR
+        if (kotlin.math.abs(nL - lastLdlValue) > EYELID_DEADBAND ||
+            kotlin.math.abs(nR - lastLdrValue) > EYELID_DEADBAND) {
+            motors.move(eyelidLeft = nL, eyelidRight = nR)
+            lastLdlValue = nL
+            lastLdrValue = nR
+        }
+    }
+
+    /** Map eye openness (0=shut..1=open) to a lid position. Open rests at
+     *  NEUTRAL (natural), not wide-open; fully shut = CLOSED. Linear between,
+     *  so partial openness gives a proportional squint. */
+    private fun openToLid(open: Float): Float {
+        val o = open.coerceIn(0f, 1f)
+        return MabuMotors.EYELID_NEUTRAL + (MabuMotors.EYELID_CLOSED - MabuMotors.EYELID_NEUTRAL) * (1f - o)
     }
 
     // ---------- Motor tween ----------------------------------------------------
@@ -1016,6 +1160,15 @@ class MainActivity : AppCompatActivity() {
                             "${"%.2f".format(currentY)}) neck=(R${"%.0f".format(currentNeckRot)}," +
                             "E${"%.0f".format(currentNeckElev)},T${"%.0f".format(currentNeckTilt)})")
                     }
+                }
+
+                // Eyelid blink rendering, decoupled from the camera rate: the
+                // detector (maybeMirrorEyelids) sets the target at ~10 fps, but
+                // we tween toward it here at 25 Hz so the blink itself is smooth.
+                // Separate motors.move (partial update) so it doesn't re-send
+                // the gaze/neck frame. Mirror modes only; else doBlink owns lids.
+                if (tuning.blinkMethod == "mirror" || tuning.blinkMethod == "both") {
+                    renderEyelids(SystemClock.uptimeMillis())
                 }
             }
             handler.postDelayed(this, GAZE_TICK_MS)
@@ -1336,7 +1489,13 @@ class MainActivity : AppCompatActivity() {
         private const val GAZE_TICK_MS = 40L
         private const val GAZE_EPSILON = 0.003f
         private const val NECK_EPSILON = 0.5f
-        private const val EYELID_ALPHA = 0.35f
+        // Eyelid render tween (25 Hz). Detection thresholds + coupling +
+        // partial-closure smoothing live in TuningSettings (live-tunable).
+        // Asymmetric: close fast, reopen softer -- natural blink dynamics; the
+        // deadband stops sending once a lid is steady.
+        private const val EYELID_CLOSE_ALPHA = 0.60f
+        private const val EYELID_OPEN_ALPHA  = 0.35f
+        private const val EYELID_DEADBAND = 1.5f
 
         private const val BLINK_HOLD_MS = 100L
         private const val SACCADE_DURATION_MS = 150L

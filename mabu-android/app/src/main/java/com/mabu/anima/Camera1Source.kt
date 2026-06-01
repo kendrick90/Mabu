@@ -30,6 +30,11 @@ class Camera1Source(
     private val activity: Activity,
     private val textureView: TextureView,
     private val analyzer: FaceAnalyzer,
+    /** Optional bbox-only detector running in parallel with [analyzer]. When
+     *  set, every preview frame is fed to both detectors at once with their
+     *  own backpressure flags; the buffer is returned to the camera only
+     *  after both that started have completed (refcount in [onFrame]). */
+    private val fastAnalyzer: FastFaceAnalyzer? = null,
     /** Called on the main thread once the preview size + image rotation
      *  are known, so the host can resize the preview / overlay to match
      *  the camera's aspect ratio and avoid non-uniform stretch. */
@@ -50,6 +55,7 @@ class Camera1Source(
      *  fallback knob if deprioritization alone isn't enough. */
     @Volatile private var minDetectIntervalMs: Long = 0L
     @Volatile private var lastAnalyzeStartMs: Long = 0L
+    private val fastBusy = AtomicBoolean(false)
 
     /**
      * Dedicated thread for camera open + preview-callback delivery, run at a
@@ -188,14 +194,19 @@ class Camera1Source(
 
     private fun onFrame(data: ByteArray?, cam: Camera) {
         if (data == null) return
-        // Rate-gate before touching the busy flag: most frames hit this path
-        // and just bounce the buffer back to the camera, leaving the CPU (and
-        // the audio thread) alone.
+        // Rate-gate before touching busy flags: most frames hit this path and
+        // just bounce the buffer back to the camera, leaving the CPU (and the
+        // audio thread) alone.
         val now = SystemClock.uptimeMillis()
         if (now - lastAnalyzeStartMs < minDetectIntervalMs) {
             cam.addCallbackBuffer(data); return
         }
-        if (!busy.compareAndSet(false, true)) {
+        // Independent backpressure: the fast detector finishes earlier and can
+        // start on a frame where the full detector is still chewing on the
+        // previous one. Either one (or both) may skip this frame.
+        val fullStarted = busy.compareAndSet(false, true)
+        val fastStarted = fastAnalyzer != null && fastBusy.compareAndSet(false, true)
+        if (!fullStarted && !fastStarted) {
             cam.addCallbackBuffer(data); return
         }
         lastAnalyzeStartMs = now
@@ -204,12 +215,29 @@ class Camera1Source(
         )
         val rotW = if (imageRotation == 90 || imageRotation == 270) previewHeight else previewWidth
         val rotH = if (imageRotation == 90 || imageRotation == 270) previewWidth else previewHeight
-        // Pass the raw NV21 buffer along so the analyzer can run a pupil-
-        // position pass for gaze estimation. data stays valid until our
-        // onDone callback recycles it to the camera below.
-        analyzer.analyze(input, data, previewWidth, previewHeight, rotW, rotH, imageRotation) {
-            busy.set(false)
-            cam.addCallbackBuffer(data)
+
+        // Refcount: the buffer is shared by both detectors (ML Kit reads from
+        // it asynchronously; the full analyzer also samples the NV21 directly
+        // for pupil tracking). Return it to the camera only after every
+        // detector that *started* this frame has signaled completion.
+        val pending = java.util.concurrent.atomic.AtomicInteger(
+            (if (fullStarted) 1 else 0) + (if (fastStarted) 1 else 0)
+        )
+        val recycle = {
+            if (pending.decrementAndGet() == 0) cam.addCallbackBuffer(data)
+        }
+
+        if (fullStarted) {
+            analyzer.analyze(input, data, previewWidth, previewHeight, rotW, rotH, imageRotation) {
+                busy.set(false)
+                recycle()
+            }
+        }
+        if (fastStarted) {
+            fastAnalyzer!!.analyze(input, rotW, rotH, imageRotation) {
+                fastBusy.set(false)
+                recycle()
+            }
         }
     }
 

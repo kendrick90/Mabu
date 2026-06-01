@@ -44,6 +44,12 @@ class TuningSettings {
     // When true, PUPPET eyes follow pupil direction (real gaze). When
     // false, they follow head pose (the old behavior).
     var useEyeGaze     = true
+    // PUPPET eye-gaze noise control (the pupil heuristic is noisy). InputAlpha
+    // low-passes the raw pupil offset; Deadband holds the eye target until a
+    // real gaze shift (fixation hysteresis). Raise either to kill jitter; too
+    // high makes saccades laggy/coarse.
+    var eyeGazeInputAlpha = 0.35f
+    var eyeGazeDeadband   = 0.06f
 
     // Behavior à la carte -- modes apply preset combinations of these, but
     // individual flags can be flipped after.
@@ -52,12 +58,25 @@ class TuningSettings {
     var enableSaccades = true
     var enableGlances  = true
     /**
-     * 0 = each eyelid follows its own eye-open probability (independent;
-     * fine winks but false-positive single-eye blinks slip through).
-     * 1 = both eyelids follow the brighter (more-open) eye, fully linked.
-     * Intermediate values let the clearer eye drag the noisier one up.
+     * Blink coupling strength when BOTH eyes are engaged (neither is clearly
+     * open). 0 = each eyelid fully independent (a blink where one eye's prob
+     * lags reads as a one-eyed wink). 1 = both eyelids driven by the more-
+     * closed eye, so a real two-eye blink always closes both. ~0.8 fixes the
+     * "only one eye blinks" problem while still allowing deliberate winks
+     * (a clearly-open eye, prob > eyelidWinkOpen, is never coupled).
      */
-    var eyelidCoupling = 0.5f
+    var eyelidCoupling = 0.8f
+    /** An eye with open-prob above this is treated as deliberately open, so a
+     *  wink (one eye open, one shut) stays independent and isn't coupled into
+     *  a both-eyes blink. Below it, a dropping eye couples to its partner. */
+    var eyelidWinkOpen = 0.80f
+    /** Open-prob below this latches a full closure for eyelidBlinkHoldMs, so a
+     *  fast blink caught in one ~10 fps frame still renders fully closed. */
+    var eyelidCloseLevel = 0.30f
+    var eyelidBlinkHoldMs = 120
+    /** Low-pass on eye openness for smooth PARTIAL closure (squint). Separate
+     *  from the blink latch, which bypasses it for crisp full blinks. */
+    var eyelidOpenInputAlpha = 0.45f
 
     /** Pico TTS ignores its own volume param so we set STREAM_MUSIC directly.
      *  On Mabu's speaker 0.2-0.3 is comfortable. Physical volume buttons on
@@ -99,10 +118,16 @@ class TuningSettings {
         neckTiltSign       = prefs.getFloat("neckTiltSign",       neckTiltSign)
         eyeGazeGain        = prefs.getFloat("eyeGazeGain",        eyeGazeGain)
         useEyeGaze         = prefs.getBoolean("useEyeGaze",       useEyeGaze)
+        eyeGazeInputAlpha  = prefs.getFloat("eyeGazeInputAlpha",  eyeGazeInputAlpha)
+        eyeGazeDeadband    = prefs.getFloat("eyeGazeDeadband",    eyeGazeDeadband)
         blinkMethod        = prefs.getString("blinkMethod",       blinkMethod) ?: blinkMethod
         enableSaccades     = prefs.getBoolean("enableSaccades",   enableSaccades)
         enableGlances      = prefs.getBoolean("enableGlances",    enableGlances)
         eyelidCoupling     = prefs.getFloat("eyelidCoupling",     eyelidCoupling)
+        eyelidWinkOpen     = prefs.getFloat("eyelidWinkOpen",     eyelidWinkOpen)
+        eyelidCloseLevel   = prefs.getFloat("eyelidCloseLevel",   eyelidCloseLevel)
+        eyelidBlinkHoldMs  = prefs.getInt("eyelidBlinkHoldMs",    eyelidBlinkHoldMs)
+        eyelidOpenInputAlpha = prefs.getFloat("eyelidOpenInputAlpha", eyelidOpenInputAlpha)
         ttsVolume          = prefs.getFloat("ttsVolume",          ttsVolume)
         neckFollowGain     = prefs.getFloat("neckFollowGain",     neckFollowGain)
         cognitionMode      = prefs.getString("cognitionMode",     cognitionMode) ?: cognitionMode
@@ -130,10 +155,16 @@ class TuningSettings {
             putFloat("neckTiltSign",       neckTiltSign)
             putFloat("eyeGazeGain",        eyeGazeGain)
             putBoolean("useEyeGaze",       useEyeGaze)
+            putFloat("eyeGazeInputAlpha",  eyeGazeInputAlpha)
+            putFloat("eyeGazeDeadband",    eyeGazeDeadband)
             putString("blinkMethod",       blinkMethod)
             putBoolean("enableSaccades",   enableSaccades)
             putBoolean("enableGlances",    enableGlances)
             putFloat("eyelidCoupling",     eyelidCoupling)
+            putFloat("eyelidWinkOpen",     eyelidWinkOpen)
+            putFloat("eyelidCloseLevel",   eyelidCloseLevel)
+            putInt("eyelidBlinkHoldMs",    eyelidBlinkHoldMs)
+            putFloat("eyelidOpenInputAlpha", eyelidOpenInputAlpha)
             putFloat("ttsVolume",          ttsVolume)
             putFloat("neckFollowGain",     neckFollowGain)
             putString("cognitionMode",     cognitionMode)
@@ -164,10 +195,16 @@ class TuningSettings {
         neckAngleRange     = 30f
         eyeGazeGain        = 1.5f
         useEyeGaze         = true
+        eyeGazeInputAlpha  = 0.35f
+        eyeGazeDeadband    = 0.06f
         blinkMethod        = "spontaneous"
         enableSaccades     = true
         enableGlances      = true
-        eyelidCoupling     = 0.5f
+        eyelidCoupling     = 0.8f
+        eyelidWinkOpen     = 0.80f
+        eyelidCloseLevel   = 0.30f
+        eyelidBlinkHoldMs  = 120
+        eyelidOpenInputAlpha = 0.45f
         ttsVolume          = 0.22f
         neckFollowGain     = 0.4f
         cognitionMode      = "streaming"
