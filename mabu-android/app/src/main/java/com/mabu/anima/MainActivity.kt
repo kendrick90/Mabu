@@ -43,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var pipecatSessionDead = false    // dropped after connecting -> needs restart
     private var pipecatState: ai.pipecat.client.types.TransportState? = null
     private var botSpeaking = false
+    private var lastPipecatConnectMs = 0L              // throttle auto-reconnect attempts
     private lateinit var micButton: TextView
     private var muteButton: TextView? = null
 
@@ -430,55 +431,69 @@ class MainActivity : AppCompatActivity() {
      * mute toggles the outbound mic track (see [toggleMute]).
      */
     private fun startPipecat() {
+        connectPipecat()
+        handler.removeCallbacks(pipecatHealthPoll)
+        handler.post(pipecatHealthPoll)
+    }
+
+    /** (Re)establish the Pipecat session: release any old client, build a fresh
+     *  one and connect. A fresh instance avoids reusing wedged transport state.
+     *  Called on first start and by the health poll when the brain returns. */
+    private fun connectPipecat() {
+        try { pipecatVoice?.release() } catch (_: Throwable) {}
+        pipecatState = null
+        pipecatSessionDead = false
+        botSpeaking = false
+        lastPipecatConnectMs = System.currentTimeMillis()
         val voice = PipecatVoice(
             context = this,
             offerUrl = tuning.pipecatOfferUrl,
             enableMic = !manualMute,
-            listener = object : PipecatVoice.Listener {
-                override fun onConnected() {
-                    pipecatReachable = true
-                    updatePipecatStatus()
-                }
-                override fun onDisconnected() {
-                    pipecatSessionDead = true        // WebRTC session gone -> needs restart
-                    overlayView.setHeardText(null)
-                    updatePipecatStatus()
-                }
-                override fun onConnectionState(state: ai.pipecat.client.types.TransportState) {
-                    pipecatState = state
-                    if (state == ai.pipecat.client.types.TransportState.Ready) pipecatReachable = true
-                    updatePipecatStatus()
-                }
-                override fun onUserTranscript(text: String, isFinal: Boolean) {
-                    if (manualMute) return
-                    overlayView.setHeardText(text)   // speech bubble by the face
-                }
-                override fun onBotStartedSpeaking() {
-                    botSpeaking = true
-                    updatePipecatStatus()
-                }
-                override fun onBotStoppedSpeaking() {
-                    botSpeaking = false
-                    overlayView.setHeardText(null)   // clear the bubble after a turn
-                    updatePipecatStatus()
-                }
-                override fun onServerMessage(data: ai.pipecat.client.types.Value) {
-                    // PC->device control channel for agentic tools (set_mode,
-                    // launch_app, clone_voice ...). Phase 3 dispatches these into
-                    // setMode()/MabuMotors. For now just log so we can see them.
-                    Log.i(TAG, "pipecat server message: $data")
-                }
-                override fun onError(message: String) {
-                    Log.e(TAG, "pipecat error: $message")
-                }
-            }
+            listener = pipecatListener(),
         )
         pipecatVoice = voice
         voice.connect()
-        Log.i(TAG, "pipecat mode: connecting to ${tuning.pipecatOfferUrl}")
+        Log.i(TAG, "pipecat: connecting to ${tuning.pipecatOfferUrl}")
         updatePipecatStatus()
-        handler.removeCallbacks(pipecatHealthPoll)
-        handler.post(pipecatHealthPoll)
+    }
+
+    private fun pipecatListener() = object : PipecatVoice.Listener {
+        override fun onConnected() {
+            pipecatReachable = true
+            pipecatSessionDead = false
+            updatePipecatStatus()
+        }
+        override fun onDisconnected() {
+            pipecatSessionDead = true        // session gone; poll will auto-reconnect
+            overlayView.setHeardText(null)
+            updatePipecatStatus()
+        }
+        override fun onConnectionState(state: ai.pipecat.client.types.TransportState) {
+            pipecatState = state
+            if (state == ai.pipecat.client.types.TransportState.Ready) pipecatReachable = true
+            updatePipecatStatus()
+        }
+        override fun onUserTranscript(text: String, isFinal: Boolean) {
+            if (manualMute) return
+            overlayView.setHeardText(text)   // speech bubble by the face
+        }
+        override fun onBotStartedSpeaking() {
+            botSpeaking = true
+            updatePipecatStatus()
+        }
+        override fun onBotStoppedSpeaking() {
+            botSpeaking = false
+            overlayView.setHeardText(null)   // clear the bubble after a turn
+            updatePipecatStatus()
+        }
+        override fun onServerMessage(data: ai.pipecat.client.types.Value) {
+            // PC->device control channel for agentic tools (set_mode, launch_app,
+            // clone_voice ...). Phase 3 dispatches these into setMode()/MabuMotors.
+            Log.i(TAG, "pipecat server message: $data")
+        }
+        override fun onError(message: String) {
+            Log.e(TAG, "pipecat error: $message")
+        }
     }
 
     /** Single source of truth for the pipecat status line. Reflects whether the
@@ -486,9 +501,9 @@ class MainActivity : AppCompatActivity() {
     private fun updatePipecatStatus() {
         if (tuning.cognitionMode != "pipecat") return
         micButton.text = when {
-            pipecatSessionDead -> "⚠ brain offline — restart"
             !pipecatReachable && pipecatState == null -> "🔌 connecting…"   // startup, pre-probe
             !pipecatReachable -> "⚠ brain offline"
+            pipecatSessionDead -> "🔌 reconnecting…"   // bot back; poll re-establishes
             manualMute -> "🔇 muted"
             botSpeaking -> "🔊 speaking…"
             pipecatState == ai.pipecat.client.types.TransportState.Ready -> "🎤 listening…"
@@ -513,6 +528,15 @@ class MainActivity : AppCompatActivity() {
                         val was = pipecatReachable
                         pipecatReachable = ok
                         if (was && !ok) pipecatSessionDead = true   // was up, now gone
+                        // Auto-reconnect: brain reachable but the session isn't live
+                        // (initial connect failed, or it dropped). Throttled.
+                        val notLive = pipecatSessionDead ||
+                            pipecatState != ai.pipecat.client.types.TransportState.Ready
+                        if (ok && notLive &&
+                            System.currentTimeMillis() - lastPipecatConnectMs > 6000) {
+                            Log.i(TAG, "pipecat: auto-reconnecting (brain reachable, session not live)")
+                            connectPipecat()
+                        }
                         updatePipecatStatus()
                     }
                 }.start()
