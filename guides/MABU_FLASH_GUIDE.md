@@ -11,9 +11,9 @@
 > not assume you read any other doc — but it reuses the proven tooling in
 > `scripts/` and `firmware/`.
 >
-> Companion docs: [`MABU_MOTOR_GUIDE.md`](MABU_MOTOR_GUIDE.md) (protocol/motors),
-> [`guides/MABU_BUILD_GUIDE.md`](guides/MABU_BUILD_GUIDE.md) (app build/deploy),
-> [`README.md`](README.md) (liberation procedure), [`selinux/`](selinux/) (the rule).
+> Companion docs: [`MABU_MOTOR_GUIDE.md`](../MABU_MOTOR_GUIDE.md) (protocol/motors),
+> [`guides/MABU_BUILD_GUIDE.md`](MABU_BUILD_GUIDE.md) (app build/deploy),
+> [`README.md`](../README.md) (liberation procedure), [`selinux/`](../selinux/) (the rule).
 
 ---
 
