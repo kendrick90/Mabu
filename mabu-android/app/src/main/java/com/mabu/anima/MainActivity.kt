@@ -45,19 +45,39 @@ class MainActivity : AppCompatActivity() {
     private var botSpeaking = false
     private var lastPipecatConnectMs = 0L              // throttle auto-reconnect attempts
     // Debounced "bot finished speaking" -> drop to listening only after a real
-    // pause, so the status doesn't flicker between a reply's TTS sentences.
+    // pause, so the status pill doesn't flicker between a reply's TTS sentences.
+    // Keeps the speech bubbles alive so they don't disappear the moment Mabu
+    // stops -- those are cleared on a separate, longer timer below.
     private val botSpeakingOff = Runnable {
         botSpeaking = false
-        overlayView.setHeardText(null)
         updatePipecatStatus()
     }
+    // Separate, longer fade for the on-screen speech bubbles. Status pill back
+    // to "listening" quickly (mic is hot again), but the words linger so the
+    // user has time to read them.
+    private val bubblesFadeOff = Runnable {
+        overlayView.setHeardText(null)
+        overlayView.setBotText(null)
+    }
+
+    // Per-turn accumulators so the bubbles show the FULL user utterance and
+    // FULL Mabu reply, not just the most-recent transcript fragment. The brain
+    // emits one user-transcription per WhisperLive segment and one bot-
+    // transcription per LLM sentence; we glue them together client-side
+    // between the matching start/stop signals.
+    private val userTurnFinals = StringBuilder()
+    @Volatile private var userCurrentInterim = ""
+    private val botReply = StringBuilder()
     private lateinit var micButton: TextView
     private var muteButton: TextView? = null
 
     // Perf HUD pinned top-left. Visible by default; long-press to hide for the
     // session. Refreshed at 2 Hz from DeviceStats.
     private var hudView: TextView? = null
-    private var hudVisible = true
+    // HUD is hidden by default now -- the top of the screen is reserved for
+    // Mabu's reply bubble. Long-press the area where it WOULD be (top-left,
+    // see [hudInvisibleTapTarget]) to bring it back for debugging.
+    private var hudVisible = false
     private val hudTick = object : Runnable {
         override fun run() {
             hudView?.let { tv ->
@@ -322,13 +342,17 @@ class MainActivity : AppCompatActivity() {
             Gravity.TOP or Gravity.END
         ).apply { setMargins(0, 110, 24, 0) })
 
-        // Perf HUD top-left. Tap-through disabled only for long-press toggle.
+        // Perf HUD top-left, hidden by default (top of screen now belongs to
+        // Mabu's speech bubble). Long-press the top-left corner to toggle it
+        // on for debugging -- a tiny invisible hit-target catches the press
+        // when the HUD itself is GONE.
         hudView = TextView(this).apply {
             textSize = 11f
             typeface = android.graphics.Typeface.MONOSPACE
             setTextColor(Color.argb(220, 180, 255, 180))
             setBackgroundColor(Color.argb(140, 0, 0, 0))
             setPadding(12, 8, 12, 8)
+            visibility = android.view.View.GONE
             setOnLongClickListener {
                 hudVisible = !hudVisible
                 visibility = if (hudVisible) android.view.View.VISIBLE else android.view.View.GONE
@@ -340,6 +364,20 @@ class MainActivity : AppCompatActivity() {
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.TOP or Gravity.START
         ).apply { setMargins(16, 24, 0, 0) })
+        // Tiny invisible long-press target so the HUD can be re-summoned when
+        // GONE. 60x60 dp top-left corner -- not visible, no z-fighting with
+        // the bubble area.
+        val hudPoke = android.view.View(this).apply {
+            setOnLongClickListener {
+                hudVisible = !hudVisible
+                hudView?.visibility =
+                    if (hudVisible) android.view.View.VISIBLE else android.view.View.GONE
+                true
+            }
+        }
+        root.addView(hudPoke, FrameLayout.LayoutParams(
+            120, 120, Gravity.TOP or Gravity.START
+        ))
         handler.post(hudTick)
 
         statusServer = StatusServer(applicationContext, object : StatusServer.Hooks {
@@ -360,6 +398,17 @@ class MainActivity : AppCompatActivity() {
                 put("gazeYOffset", tuning.gazeYOffset)
                 put("useEyeGaze", tuning.useEyeGaze)
                 put("blinkMethod", tuning.blinkMethod)
+                put("yawBias", tuning.yawBias)
+                put("pitchBias", tuning.pitchBias)
+                put("rollBias", tuning.rollBias)
+                put("yawRange", tuning.yawRange)
+                put("pitchRange", tuning.pitchRange)
+                put("rollRange", tuning.rollRange)
+                put("pupilXBias", tuning.pupilXBias)
+                put("pupilYBias", tuning.pupilYBias)
+                put("neckRotSign", tuning.neckRotSign)
+                put("neckElevSign", tuning.neckElevSign)
+                put("neckTiltSign", tuning.neckTiltSign)
             }
             override fun applyConfig(params: Map<String, String>) {
                 handler.post {
@@ -412,6 +461,7 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(root)
         updateVolumeDisplay()
+        updateSpeakerMuteIcon()
         registerDebugReceiver()
 
         // Eager TTS init so the first broadcast / button press doesn't get
@@ -678,12 +728,50 @@ class MainActivity : AppCompatActivity() {
             if (state == ai.pipecat.client.types.TransportState.Ready) pipecatReachable = true
             updatePipecatStatus()
         }
+        override fun onUserStartedSpeaking() {
+            // Fresh user turn -- drop the previous accumulation so a long pause
+            // between utterances doesn't read as one giant run-on transcript.
+            userTurnFinals.clear()
+            userCurrentInterim = ""
+        }
         override fun onUserTranscript(text: String, isFinal: Boolean) {
-            if (manualMute) return
-            overlayView.setHeardText(text)   // speech bubble by the face
+            // The brain emits user-transcription per WhisperLive segment:
+            // interim updates (final=false) keep replacing the current segment;
+            // a final caps it. Append finals to the running turn, keep current
+            // interim appended live, so a multi-sentence utterance accumulates
+            // visibly in the bubble.
+            handler.removeCallbacks(bubblesFadeOff)
+            if (isFinal) {
+                if (userTurnFinals.isNotEmpty()) userTurnFinals.append(' ')
+                userTurnFinals.append(text)
+                userCurrentInterim = ""
+            } else {
+                userCurrentInterim = text
+            }
+            val combined = (userTurnFinals.toString() +
+                if (userCurrentInterim.isNotEmpty()) " $userCurrentInterim" else "").trim()
+            overlayView.setHeardText(combined)
+        }
+        override fun onBotLLMStarted() {
+            // New reply incoming -- reset the bot bubble's accumulation.
+            botReply.clear()
+            handler.removeCallbacks(bubblesFadeOff)
+        }
+        override fun onBotTranscript(text: String) {
+            // The transcript is the RAW LLM text -- it still carries the
+            // "Mabu:" speaker prefix and *stage directions* that the brain
+            // strips before TTS. Clean it so the bubble matches what's spoken.
+            val clean = cleanBotText(text)
+            if (clean.isBlank()) return
+            // One call per sentence; append to build up the full reply so the
+            // bubble shows the complete turn instead of just the last sentence.
+            if (botReply.isNotEmpty()) botReply.append(' ')
+            botReply.append(clean)
+            overlayView.setBotText(botReply.toString())
         }
         override fun onBotStartedSpeaking() {
             handler.removeCallbacks(botSpeakingOff)   // cancel the inter-sentence timeout
+            handler.removeCallbacks(bubblesFadeOff)   // a new sentence resets the fade
             botSpeaking = true
             updatePipecatStatus()
         }
@@ -694,6 +782,10 @@ class MainActivity : AppCompatActivity() {
             // if no new sentence starts within the debounce window.
             handler.removeCallbacks(botSpeakingOff)
             handler.postDelayed(botSpeakingOff, 1200)
+            // Bubbles linger noticeably longer than the status pill -- the user
+            // wants time to read what was said even after Mabu's mouth shuts.
+            handler.removeCallbacks(bubblesFadeOff)
+            handler.postDelayed(bubblesFadeOff, BUBBLE_HOLD_MS)
         }
         override fun onServerMessage(data: ai.pipecat.client.types.Value) {
             // PC->device control channel for agentic tools (set_mode, launch_app,
@@ -703,6 +795,18 @@ class MainActivity : AppCompatActivity() {
         override fun onError(message: String) {
             Log.e(TAG, "pipecat error: $message")
         }
+    }
+
+    // Mirror of pc-brain's clean_for_speech: strip the "Mabu:"/"Name:" speaker
+    // prefix and *stage directions* so the bubble shows only the spoken words
+    // (the brain already does this before TTS; the RTVI transcript is raw).
+    private val botNamePrefix = Regex("^\\s*[A-Za-z][\\w '\\-]{0,24}:\\s*")
+    private val botAction = Regex("\\*[^*]*\\*")
+    private fun cleanBotText(text: String): String {
+        var t = botAction.replace(text, "")
+        t = botNamePrefix.replace(t, "")
+        t = t.replace("*", " ")
+        return t.replace(Regex("\\s+"), " ").trim()
     }
 
     /** Single source of truth for the pipecat status line. Reflects whether the
@@ -940,6 +1044,17 @@ class MainActivity : AppCompatActivity() {
             "gazeYOffset"          -> f?.let { tuning.gazeYOffset = it.coerceIn(-0.5f, 0.5f) }
             "useEyeGaze"           -> tuning.useEyeGaze = (v == "true" || v == "1")
             "blinkMethod"          -> if (v in setOf("spontaneous", "mirror", "both", "none")) tuning.blinkMethod = v
+            "yawBias"              -> f?.let { tuning.yawBias = it.coerceIn(-90f, 90f) }
+            "pitchBias"            -> f?.let { tuning.pitchBias = it.coerceIn(-90f, 90f) }
+            "rollBias"             -> f?.let { tuning.rollBias = it.coerceIn(-90f, 90f) }
+            "yawRange"             -> f?.let { tuning.yawRange = it.coerceIn(5f, 90f) }
+            "pitchRange"           -> f?.let { tuning.pitchRange = it.coerceIn(5f, 90f) }
+            "rollRange"            -> f?.let { tuning.rollRange = it.coerceIn(5f, 90f) }
+            "pupilXBias"           -> f?.let { tuning.pupilXBias = it.coerceIn(-1f, 1f) }
+            "pupilYBias"           -> f?.let { tuning.pupilYBias = it.coerceIn(-1f, 1f) }
+            "neckRotSign"          -> f?.let { tuning.neckRotSign = if (it < 0f) -1f else 1f }
+            "neckElevSign"         -> f?.let { tuning.neckElevSign = if (it < 0f) -1f else 1f }
+            "neckTiltSign"         -> f?.let { tuning.neckTiltSign = if (it < 0f) -1f else 1f }
         }
     }
 
@@ -1116,9 +1231,11 @@ class MainActivity : AppCompatActivity() {
         val pitch = face.headEulerAngleX
         val roll  = face.headEulerAngleZ
 
-        targetNeckRot  = motorFromAngle(yaw   * tuning.neckRotSign)
-        targetNeckElev = motorFromAngle(pitch * tuning.neckElevSign)
-        targetNeckTilt = motorFromAngle(roll  * tuning.neckTiltSign)
+        // Per-axis SENSE->motor map: subtract the resting bias (kiosk tilt etc.)
+        // then scale by the per-axis input range and mirror sign.
+        targetNeckRot  = mapAxis(yaw,   tuning.yawBias,   tuning.yawRange,   tuning.neckRotSign)
+        targetNeckElev = mapAxis(pitch, tuning.pitchBias, tuning.pitchRange, tuning.neckElevSign)
+        targetNeckTilt = mapAxis(roll,  tuning.rollBias,  tuning.rollRange,  tuning.neckTiltSign)
 
         val gaze = result.gaze
         val avgPupil = pupilAverage(gaze)
@@ -1132,8 +1249,8 @@ class MainActivity : AppCompatActivity() {
                 pupilFiltX += (avgPupil.x - pupilFiltX) * tuning.eyeGazeInputAlpha
                 pupilFiltY += (avgPupil.y - pupilFiltY) * tuning.eyeGazeInputAlpha
             }
-            val tx = (0.5f + pupilFiltX * tuning.eyeGazeGain).coerceIn(0f, 1f)
-            val ty = (0.5f + pupilFiltY * tuning.eyeGazeGain).coerceIn(0f, 1f)
+            val tx = (0.5f + (pupilFiltX - tuning.pupilXBias) * tuning.eyeGazeGain).coerceIn(0f, 1f)
+            val ty = (0.5f + (pupilFiltY - tuning.pupilYBias) * tuning.eyeGazeGain).coerceIn(0f, 1f)
             // 2) Fixation deadband: hold the current eye target unless the new
             //    one moved enough to be a real gaze shift. Kills residual at-
             //    rest jitter and reads as natural fixation (real eyes hold,
@@ -1215,6 +1332,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun motorFromAngle(angleDeg: Float): Float =
         (50f + (angleDeg / tuning.neckAngleRange) * 50f).coerceIn(0f, 100f)
+
+    /** Generalized SENSE->motor transfer: subtract the resting [bias], scale so
+     *  [range] of input reaches the motor extreme, mirror with [sign], centered
+     *  at 50. Defaults (bias 0, range 30) reproduce [motorFromAngle]. */
+    private fun mapAxis(sensed: Float, bias: Float, range: Float, sign: Float): Float {
+        val r = if (kotlin.math.abs(range) < 0.1f) 30f else range
+        return (50f + sign * ((sensed - bias) / r) * 50f).coerceIn(0f, 100f)
+    }
 
     private fun pupilAverage(gaze: GazeData?): android.graphics.PointF? {
         gaze ?: return null
@@ -1506,8 +1631,9 @@ class MainActivity : AppCompatActivity() {
             setPadding(20, 4, 20, 4)
             setOnClickListener { adjustVolume(-1) }
         }
-        // Mute toggle lives here with the volume controls (not the bottom
-        // status button). Tap to stop/resume listening.
+        // Mic mute: stop listening (mic track off). Distinct from the speaker
+        // mute below -- you may want one without the other (e.g. silence Mabu
+        // mid-reply but keep transcribing).
         val mute = TextView(this).apply {
             text = "🎤"; textSize = 24f
             setTextColor(Color.WHITE); gravity = Gravity.CENTER
@@ -1515,11 +1641,42 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { toggleMute() }
         }
         muteButton = mute
+        // Speaker mute: shut Mabu's voice (STREAM_MUSIC -> 0) without touching
+        // the mic. Single button — system-level toggle, restores the previous
+        // level on the next tap (ADJUST_TOGGLE_MUTE handles the bookkeeping).
+        speakerMuteButton = TextView(this).apply {
+            text = "🔊"; textSize = 24f
+            setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(20, 6, 20, 10)
+            setOnClickListener { toggleSpeakerMute() }
+        }
         panel.addView(mute)
         panel.addView(plus)
         panel.addView(volLevelView)
         panel.addView(minus)
+        panel.addView(speakerMuteButton)
         return panel
+    }
+
+    private var speakerMuteButton: TextView? = null
+
+    /** Toggle the STREAM_MUSIC speaker mute. Uses AudioManager's built-in
+     *  toggle so the previous volume restores cleanly on a second tap. */
+    private fun toggleSpeakerMute() {
+        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        am.adjustStreamVolume(
+            android.media.AudioManager.STREAM_MUSIC,
+            android.media.AudioManager.ADJUST_TOGGLE_MUTE,
+            0
+        )
+        updateSpeakerMuteIcon()
+        updateVolumeDisplay()
+    }
+
+    private fun updateSpeakerMuteIcon() {
+        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        val muted = am.isStreamMute(android.media.AudioManager.STREAM_MUSIC)
+        speakerMuteButton?.text = if (muted) "🔇" else "🔊"
     }
 
     /** Manual mute toggle (sticky). Separate from the echo-guard auto-mute. */
@@ -1564,6 +1721,8 @@ class MainActivity : AppCompatActivity() {
         tuning.ttsVolume = newLevel.toFloat() / max
         tuning.save(getSharedPreferences("tuning", MODE_PRIVATE))
         updateVolumeDisplay()
+        // ± unmutes as a side effect; keep the icon honest.
+        updateSpeakerMuteIcon()
     }
 
     private fun updateVolumeDisplay() {
@@ -1681,6 +1840,11 @@ class MainActivity : AppCompatActivity() {
         private const val HOLD_OVERLAY_MS = 500L
 
         private const val GAZE_TICK_MS = 40L
+        /** How long the user-heard and Mabu-said bubbles stay on screen after
+         *  the bot stops speaking. Long enough to read a short reply at a
+         *  glance; cleared on the next user turn (setHeardText also clears
+         *  the bot bubble). */
+        private const val BUBBLE_HOLD_MS = 6000L
         /** PUPPET velocity-extrapolation horizon. Cap on how far forward the
          *  tween will project a target from the last detection. ~ one detection
          *  interval -- enough to close the detection-latency gap, short enough

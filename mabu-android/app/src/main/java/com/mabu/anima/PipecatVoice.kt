@@ -54,6 +54,14 @@ class PipecatVoice(
         fun onConnectionState(state: TransportState) {}
         /** A transcript of the user's speech. [isFinal] false = interim. */
         fun onUserTranscript(text: String, isFinal: Boolean) {}
+        /** A sentence-level transcript of what Mabu is saying back. Each call
+         *  is one complete sentence emitted by the brain's LLM stream; for a
+         *  multi-sentence reply the listener fires multiple times. */
+        fun onBotTranscript(text: String) {}
+        /** LLM streaming has begun for a new reply -- consumers should clear
+         *  any per-turn accumulation here. Paired with [onBotLLMStopped]. */
+        fun onBotLLMStarted() {}
+        fun onBotLLMStopped() {}
         fun onUserStartedSpeaking() {}
         fun onUserStoppedSpeaking() {}
         fun onBotStartedSpeaking() {}
@@ -87,6 +95,12 @@ class PipecatVoice(
         override fun onUserTranscript(data: Transcript) {
             listener.onUserTranscript(data.text, data.final)
         }
+
+        override fun onBotTranscript(text: String) {
+            listener.onBotTranscript(text)
+        }
+        override fun onBotLLMStarted() = listener.onBotLLMStarted()
+        override fun onBotLLMStopped() = listener.onBotLLMStopped()
 
         override fun onUserStartedSpeaking() = listener.onUserStartedSpeaking()
         override fun onUserStoppedSpeaking() = listener.onUserStoppedSpeaking()
@@ -139,6 +153,7 @@ class PipecatVoice(
      * Mabu's own voice out, so this is purely "stop listening", not echo guard.
      */
     fun setMuted(muted: Boolean) {
+        Log.i(TAG, "setMuted($muted) -> enableMic(${!muted})")
         client.enableMic(!muted).logError(TAG, "enableMic")
         DeviceStats.micEnabled = !muted
     }
