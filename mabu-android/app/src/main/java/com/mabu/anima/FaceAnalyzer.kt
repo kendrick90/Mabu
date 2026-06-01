@@ -65,6 +65,7 @@ class FaceAnalyzer(
         rotationDegrees: Int,
         onDone: () -> Unit
     ) {
+        val startNs = System.nanoTime()
         detector.process(input)
             .addOnSuccessListener { faces ->
                 val gaze = computeGaze(faces, rawBytes, rawWidth, rawHeight, rotationDegrees)
@@ -72,7 +73,10 @@ class FaceAnalyzer(
                 onResult(FaceResult(faces, rotatedWidth, rotatedHeight, rotationDegrees, gaze, crop, cropRect))
             }
             .addOnFailureListener { e -> Log.w(TAG, "Detection failed", e) }
-            .addOnCompleteListener { onDone() }
+            .addOnCompleteListener {
+                DeviceStats.recordMlKitFrame((System.nanoTime() - startNs) / 1000L)
+                onDone()
+            }
     }
 
     /**

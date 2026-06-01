@@ -40,6 +40,7 @@ class PipecatVoice(
     private val offerUrl: String,
     private val listener: Listener,
     enableMic: Boolean = true,
+    enableCam: Boolean = false,
 ) {
     /** All callbacks are delivered on the thread that constructed PipecatVoice. */
     interface Listener {
@@ -75,6 +76,7 @@ class PipecatVoice(
 
         override fun onTransportStateChanged(state: TransportState) {
             Log.i(TAG, "transport state: $state")
+            DeviceStats.transportState = state.toString()
             listener.onConnectionState(state)
         }
 
@@ -110,7 +112,7 @@ class PipecatVoice(
             PipecatClientOptions(
                 callbacks = callbacks,
                 enableMic = enableMic,
-                enableCam = false,
+                enableCam = enableCam,
             )
         )
 
@@ -130,12 +132,40 @@ class PipecatVoice(
         ).logError(TAG, "connect")
     }
 
+    @Volatile private var devicesInited = false
+
     /**
      * Manual mute. Enables/disables the outbound mic track -- AEC already keeps
      * Mabu's own voice out, so this is purely "stop listening", not echo guard.
      */
     fun setMuted(muted: Boolean) {
         client.enableMic(!muted).logError(TAG, "enableMic")
+        DeviceStats.micEnabled = !muted
+    }
+
+    /** Toggle the outbound video track. The on-device Camera1 pipeline must
+     *  release the camera before calling this with true -- Camera1 on Mabu is
+     *  single-open. initDevices is deferred until the first enable because it
+     *  also probes the camera, which would race with Camera1Source at startup. */
+    fun setCamEnabled(enabled: Boolean) {
+        DeviceStats.camEnabled = enabled
+        if (enabled && !devicesInited) {
+            // initDevices is async and populates the SDK's selectedCam by
+            // enumerating the platform's cameras. enableCam reads selectedCam
+            // -- if we don't chain after init completes, enableCam sees null
+            // and silently no-ops.
+            client.initDevices().withCallback(ai.pipecat.client.result.ResultCallback { result ->
+                if (result is ai.pipecat.client.result.Result.Ok) {
+                    devicesInited = true
+                    Log.i(TAG, "initDevices done, enabling cam")
+                    client.enableCam(true).logError(TAG, "enableCam")
+                } else {
+                    Log.e(TAG, "initDevices failed: $result")
+                }
+            })
+        } else {
+            client.enableCam(enabled).logError(TAG, "enableCam")
+        }
     }
 
     val isMicEnabled: Boolean

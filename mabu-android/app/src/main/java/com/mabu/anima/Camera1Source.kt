@@ -4,6 +4,10 @@ import android.app.Activity
 import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
 import android.hardware.Camera
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import android.view.TextureView
@@ -32,10 +36,38 @@ class Camera1Source(
     private val onPreviewSizeKnown: (previewW: Int, previewH: Int, imageRotation: Int) -> Unit = { _, _, _ -> }
 ) : TextureView.SurfaceTextureListener {
 
-    private var camera: Camera? = null
+    // Opened on [cameraThread], read/torn-down from the main thread -> volatile.
+    @Volatile private var camera: Camera? = null
     private var cameraId: Int = 0
     private val cameraInfo = Camera.CameraInfo()
     private val busy = AtomicBoolean(false)
+    /** Optional start-to-start rate cap on detection. Default 0 = uncapped:
+     *  we DON'T throttle (that visibly slows gaze response), we DEPRIORITIZE --
+     *  the camera + ML Kit pipeline runs on a background-priority thread (see
+     *  [cameraThread]) so it runs full-speed when CPU is free but yields to
+     *  WebRTC's real-time audio thread under contention (no more mid-reply
+     *  speaker garble). The cap stays available via [setMaxDetectFps] as a
+     *  fallback knob if deprioritization alone isn't enough. */
+    @Volatile private var minDetectIntervalMs: Long = 0L
+    @Volatile private var lastAnalyzeStartMs: Long = 0L
+
+    /**
+     * Dedicated thread for camera open + preview-callback delivery, run at a
+     * lowered nice so the scheduler favors audio. Opening the camera here (it
+     * has a Looper) makes Camera1 deliver onFrame on THIS thread, so
+     * [FaceAnalyzer.analyze] -> detector.process() is first invoked here too --
+     * ML Kit lazily spawns its inference worker pool on that first call and the
+     * workers inherit this thread's nice value, deprioritizing the ~109 ms
+     * inference itself (the real CPU hog) relative to audio.
+     *
+     * Priority is set just BELOW Android's THREAD_PRIORITY_BACKGROUND (10)
+     * threshold on purpose: at/above 10 the platform also moves the thread into
+     * the restricted "background" cpuset (often a single core), which would
+     * starve detection instead of merely lowering its priority. A nice of +5
+     * keeps all four A17 cores available but lets URGENT_AUDIO (-19) preempt. */
+    private val cameraThread = HandlerThread("anima-camera-vision").apply { start() }
+    private val cameraHandler = Handler(cameraThread.looper)
+    private val cameraPriority = Process.THREAD_PRIORITY_BACKGROUND - 5  // +5 nice
     private var previewWidth: Int = 0
     private var previewHeight: Int = 0
     private var displayOrientation: Int = 0
@@ -60,6 +92,15 @@ class Camera1Source(
     }
 
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+        // Open + configure the camera on the background-priority camera thread
+        // so its preview callbacks (onFrame) -- and thus ML Kit's first
+        // process() and its spawned worker pool -- run deprioritized, not on
+        // the main thread at foreground priority.
+        cameraHandler.post { openCamera(surface) }
+    }
+
+    private fun openCamera(surface: SurfaceTexture) {
+        Process.setThreadPriority(cameraPriority)
         cameraId = pickFrontCamera()
         Camera.getCameraInfo(cameraId, cameraInfo)
         val cam = try {
@@ -139,11 +180,25 @@ class Camera1Source(
         }
     }
 
+    /** Tune the face-detection rate cap at runtime. fps<=0 removes the cap
+     *  (detect as fast as ML Kit + backpressure allow). */
+    fun setMaxDetectFps(fps: Int) {
+        minDetectIntervalMs = if (fps <= 0) 0L else (1000L / fps)
+    }
+
     private fun onFrame(data: ByteArray?, cam: Camera) {
         if (data == null) return
+        // Rate-gate before touching the busy flag: most frames hit this path
+        // and just bounce the buffer back to the camera, leaving the CPU (and
+        // the audio thread) alone.
+        val now = SystemClock.uptimeMillis()
+        if (now - lastAnalyzeStartMs < minDetectIntervalMs) {
+            cam.addCallbackBuffer(data); return
+        }
         if (!busy.compareAndSet(false, true)) {
             cam.addCallbackBuffer(data); return
         }
+        lastAnalyzeStartMs = now
         val input = InputImage.fromByteArray(
             data, previewWidth, previewHeight, imageRotation, InputImage.IMAGE_FORMAT_NV21
         )
@@ -168,16 +223,31 @@ class Camera1Source(
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
 
     fun release() {
-        camera?.apply {
+        val cam = camera ?: return
+        camera = null
+        // Tear down on the camera thread -- the same thread that opened it and
+        // receives its callbacks -- so we don't release the HAL out from under
+        // an in-flight preview-callback delivery.
+        cameraHandler.post {
             try {
-                setPreviewCallbackWithBuffer(null)
-                stopPreview()
+                cam.setPreviewCallbackWithBuffer(null)
+                cam.stopPreview()
             } catch (_: Exception) {
             }
-            release()
+            cam.release()
         }
-        camera = null
     }
+
+    /** Re-acquire the camera after [release]. Safe to call when already open
+     *  (no-op). Used by the video-mode toggle, which hands the camera to the
+     *  Pipecat SDK and then takes it back. */
+    fun start() {
+        if (camera != null) return
+        val surface = textureView.surfaceTexture ?: return
+        onSurfaceTextureAvailable(surface, textureView.width, textureView.height)
+    }
+
+    val isOpen: Boolean get() = camera != null
 
     companion object {
         private const val TAG = "Camera1Source"

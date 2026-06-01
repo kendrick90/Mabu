@@ -54,6 +54,38 @@ class MainActivity : AppCompatActivity() {
     private lateinit var micButton: TextView
     private var muteButton: TextView? = null
 
+    // Perf HUD pinned top-left. Visible by default; long-press to hide for the
+    // session. Refreshed at 2 Hz from DeviceStats.
+    private var hudView: TextView? = null
+    private var hudVisible = true
+    private val hudTick = object : Runnable {
+        override fun run() {
+            hudView?.let { tv ->
+                val s = DeviceStats.snapshot(this@MainActivity)
+                tv.text = buildString {
+                    append("mlkit ").append("%.1f".format(s.mlkitFps)).append(" fps  ")
+                    append("mean ").append("%.0f".format(s.mlkitMeanMs)).append("ms  ")
+                    append("max ").append("%.0f".format(s.mlkitMaxMs)).append("ms\n")
+                    append("video ").append(s.videoSendingFps).append(" fps  ")
+                    append(s.videoSendingKbps).append(" kbps  ")
+                    append("rtt ").append(s.videoRttMs).append("ms\n")
+                    append("xport ").append(s.transportState)
+                    append("  mic ").append(if (s.micEnabled) "on" else "off")
+                    append("  cam ").append(if (s.camEnabled) "on" else "off")
+                    append("  motor ").append(if (s.motorLinkOpen) "ok" else "--").append('\n')
+                    append("mode ").append(s.mode)
+                    append("  heap ").append(s.heapUsedMb).append('/').append(s.heapMaxMb).append("MB")
+                    if (s.batteryPct >= 0) {
+                        append("  batt ").append(s.batteryPct).append('%')
+                        if (!s.batteryTempC.isNaN()) append(" ").append("%.0f".format(s.batteryTempC)).append("°C")
+                    }
+                    append("  up ").append(s.uptimeSec).append('s')
+                }
+            }
+            handler.postDelayed(this, 500)
+        }
+    }
+
     // Mute has two INDEPENDENT sources: manual (user tapped mute — sticky) and
     // auto (echo guard while a reply is in progress — transient). Effective mute
     // = either. Kept separate so a finished reply can't clear a manual mute.
@@ -70,6 +102,7 @@ class MainActivity : AppCompatActivity() {
         if (tuning.cognitionMode == "streaming") micButton.text = if (manualMute) "🔇 muted" else "🎤 listening…"
     }
     private var streamingLlm: StreamingLlama? = null
+    private var statusServer: StatusServer? = null
 
     // Debug control receiver -- lets a host drive the app over ADB without
     // touching the screen. See registerDebugReceiver() for the action set.
@@ -192,6 +225,28 @@ class MainActivity : AppCompatActivity() {
             Gravity.TOP or Gravity.END
         ).apply { setMargins(0, 110, 24, 0) })
 
+        // Perf HUD top-left. Tap-through disabled only for long-press toggle.
+        hudView = TextView(this).apply {
+            textSize = 11f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTextColor(Color.argb(220, 180, 255, 180))
+            setBackgroundColor(Color.argb(140, 0, 0, 0))
+            setPadding(12, 8, 12, 8)
+            setOnLongClickListener {
+                hudVisible = !hudVisible
+                visibility = if (hudVisible) android.view.View.VISIBLE else android.view.View.GONE
+                true
+            }
+        }
+        root.addView(hudView, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.START
+        ).apply { setMargins(16, 24, 0, 0) })
+        handler.post(hudTick)
+
+        statusServer = StatusServer(applicationContext).also { it.start() }
+
         // Push-to-talk mic button along the bottom-center.
         micButton = TextView(this).apply {
             text = "🎤 hold to talk"
@@ -223,7 +278,9 @@ class MainActivity : AppCompatActivity() {
         // volume so the device starts at the right level.
         tts.applyVolume(tuning.ttsVolume)
 
-        if (motors.open()) {
+        val motorOk = motors.open()
+        DeviceStats.motorLinkOpen = motorOk
+        if (motorOk) {
             motors.restingPose()
             handler.post(gazeTickRunnable)
             handler.postDelayed(blinkRunnable, 2500)
@@ -611,6 +668,11 @@ class MainActivity : AppCompatActivity() {
                             try { tts.stop() } catch (_: Throwable) {}
                         }
                     }
+                    ACTION_CAM -> {
+                        val on = intent.getStringExtra("on") == "1"
+                        Log.i(TAG, "debug CAM: $on")
+                        handler.post { setVideoMode(on) }
+                    }
                 }
             }
         }
@@ -619,10 +681,35 @@ class MainActivity : AppCompatActivity() {
             addAction(ACTION_SPEAK)
             addAction(ACTION_MODE)
             addAction(ACTION_STOP)
+            addAction(ACTION_CAM)
         }
         registerReceiver(rx, filter)
         debugReceiver = rx
         Log.i(TAG, "debug receiver registered (SAY / SPEAK / MODE / STOP)")
+    }
+
+    /**
+     * Toggle "video mode" -- hand the camera off between on-device ML Kit
+     * (faces -> motor reflexes) and the Pipecat SDK's WebRTC capturer
+     * (frames -> brain VLM). Camera1 on Mabu is single-open, so the two
+     * consumers can't run concurrently. The HUD shows which one currently
+     * owns the camera via the `cam` and `mode` rows.
+     */
+    @Volatile private var videoMode = false
+    private fun setVideoMode(on: Boolean) {
+        if (on == videoMode) return
+        videoMode = on
+        if (on) {
+            Log.i(TAG, "video mode ON -- releasing camera for SDK")
+            cameraSource?.release()
+            // Brief gap to ensure the camera HAL fully releases before the SDK
+            // tries to open. 250 ms is empirical; the camera close path is async.
+            handler.postDelayed({ pipecatVoice?.setCamEnabled(true) }, 250)
+        } else {
+            Log.i(TAG, "video mode OFF -- returning camera to ML Kit")
+            pipecatVoice?.setCamEnabled(false)
+            handler.postDelayed({ cameraSource?.start() }, 400)
+        }
     }
 
     private fun calibrateCenter() {
@@ -636,6 +723,7 @@ class MainActivity : AppCompatActivity() {
     private fun setMode(newMode: Mode) {
         if (newMode == mode) return
         mode = newMode
+        DeviceStats.mode = newMode.name
         // Apply preset behavior flags. User can then override any of them
         // in the settings panel without changing mode.
         when (newMode) {
@@ -1042,6 +1130,7 @@ class MainActivity : AppCompatActivity() {
         try { remoteAsr?.release() } catch (_: Throwable) {}
         try { remoteTts?.release() } catch (_: Throwable) {}
         try { pipecatVoice?.release() } catch (_: Throwable) {}
+        try { statusServer?.stop() } catch (_: Throwable) {}
         Log.i(TAG, "Released camera + motors + tts + asr + remoteTts + pipecat")
     }
 
@@ -1228,6 +1317,7 @@ class MainActivity : AppCompatActivity() {
         private const val ACTION_SPEAK = "com.mabu.anima.SPEAK"
         private const val ACTION_MODE  = "com.mabu.anima.MODE"
         private const val ACTION_STOP  = "com.mabu.anima.STOP"
+        private const val ACTION_CAM   = "com.mabu.anima.CAM"
 
         // Pure backstop: RemoteTts reliably reports "done" when playback drains
         // (even on synth failure), so this only fires if TTS truly hangs. Sized
