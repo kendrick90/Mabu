@@ -138,6 +138,10 @@ class MabuMotors(
         payload[2] = 0x01
         for (i in vals.indices) payload[3 + i] = vals[i]
         send(frame(payload))
+        // Telemetry: mirror exactly what went on the wire for the /status API.
+        DeviceStats.recordMotorCommand(
+            eyelidLeft, eyelidRight, eyesLR, eyesUD, neckElev, neckRot, neckTilt
+        )
     }
 
     /**
