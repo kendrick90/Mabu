@@ -17,7 +17,8 @@
 ### Build environment (PC)
 - **Java:** `C:\Program Files\Android\Android Studio\jbr`
 - **Gradle wrapper:** `./gradlew` in project root
-- **Project root:** `X:\Claude\Mabu\MabuFaceTrack\`
+- **Active project:** `X:\Claude\Mabu\facetrackadb\` (package `com.mabu.facetrackadb`)
+- **Legacy project:** `X:\Claude\Mabu\MabuFaceTrack\` (package `com.mabu.facetrack`, TCP-bridge era — kept for reference)
 
 ### Setting JAVA_HOME for Gradle
 The system `JAVA_HOME` is not set. Always prefix Gradle calls with the JBR path:
@@ -34,65 +35,66 @@ $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
 
 ## 2. Build
 
-```bash
-cd X:\Claude\Mabu\MabuFaceTrack
-JAVA_HOME="C:/Program Files/Android/Android Studio/jbr" ./gradlew assembleDebug
+```powershell
+cd X:\Claude\Mabu\facetrackadb
+$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+.\gradlew.bat assembleDebug
 ```
 
 Output APK: `app\build\outputs\apk\debug\app-debug.apk`
 
-A clean build takes ~30–60s. Incremental builds (only Kotlin changed) take ~3–5s.
+First build (~2 min) compiles the native `libmabuserial.so` (armeabi-v7a) via CMake/NDK.
+Incremental builds (Kotlin-only changes) take ~3–5s; CMake is skipped if `serial.c` is unchanged.
 
 ---
 
 ## 3. Install and Deploy
 
 ```powershell
-& "X:\Claude\android platform-tools\adb.exe" install -r "X:\Claude\Mabu\MabuFaceTrack\app\build\outputs\apk\debug\app-debug.apk"
+$adb = "X:\Claude\android platform-tools\adb.exe"
+& $adb install -r "X:\Claude\Mabu\facetrackadb\app\build\outputs\apk\debug\app-debug.apk"
 ```
 
-`-r` = reinstall over existing app (required — the app is already installed).
+`-r` = reinstall over existing app. **No bridge setup required** — `facetrackadb` opens
+`/dev/ttyS1` directly via JNI and self-initializes motors on startup.
 
 ### After install: restart the app
-The install does not restart the running app. Force-stop and relaunch:
-```powershell
-& "X:\Claude\android platform-tools\adb.exe" shell "am force-stop com.mabu.facetrack"
-Start-Sleep -Seconds 2
-& "X:\Claude\android platform-tools\adb.exe" shell "am start -n com.mabu.facetrack/.MainActivity"
-```
 
-**CRITICAL:** `am force-stop` also kills the motor bridge (same process group). Always restart the bridge before or after force-stopping:
-```powershell
-& "X:\Claude\android platform-tools\adb.exe" shell "nohup sh /data/local/tmp/motor-bridge.sh > /data/local/tmp/motor-bridge.log 2>&1 &"
-Start-Sleep -Seconds 3
-```
-
-### Full deploy sequence (copy-paste)
 ```powershell
 $adb = "X:\Claude\android platform-tools\adb.exe"
-& $adb install -r "X:\Claude\Mabu\MabuFaceTrack\app\build\outputs\apk\debug\app-debug.apk"
-Start-Sleep -Seconds 2
-& $adb shell "nohup sh /data/local/tmp/motor-bridge.sh > /data/local/tmp/motor-bridge.log 2>&1 &"
-Start-Sleep -Seconds 3
-& $adb shell "am force-stop com.mabu.facetrack"
-Start-Sleep -Seconds 2
-& $adb shell "am start -n com.mabu.facetrack/.MainActivity"
+& $adb shell "am force-stop com.mabu.facetrackadb"
+Start-Sleep -Seconds 1
+& $adb shell "am start -n com.mabu.facetrackadb/.MainActivity"
+```
+
+The app opens `/dev/ttyS1` in its `MabuMotors.open()` call, sends the 5× cold-boot
+wake-up, and centers all motors. Expect ~2s before motors move.
+
+### Full deploy sequence (copy-paste)
+
+```powershell
+$adb = "X:\Claude\android platform-tools\adb.exe"
+& $adb install -r "X:\Claude\Mabu\facetrackadb\app\build\outputs\apk\debug\app-debug.apk"
+Start-Sleep -Seconds 1
+& $adb shell "am force-stop com.mabu.facetrackadb"
+Start-Sleep -Seconds 1
+& $adb shell "am start -n com.mabu.facetrackadb/.MainActivity"
+# Watch logcat to confirm: "Native serial opened fd=XX" then "Motors initialized via native serial"
+& $adb logcat -s MabuSerial:I MabuMotors:I AndroidRuntime:E
 ```
 
 ---
 
 ## 4. App Lifecycle Quirks
 
-### The app is the HOME launcher
-`com.mabu.facetrack` is set as the Android HOME launcher. This means:
-- It **auto-starts on boot** before the motor bridge is ready
-- Android will **relaunch it automatically** after force-stop (it's the home app)
-- `install -r` while the app is running can fail with "device offline" — install after a fresh boot or after force-stop
+### The home launcher
+`com.mabu.facetrack` (the old TCP-bridge app) was set as the Android HOME launcher and
+auto-restarts after force-stop. `com.mabu.facetrackadb` is **not** the home launcher —
+start it explicitly with `am start` after each boot or install.
 
-### Force-stop kills the bridge
-`am force-stop` terminates the entire process group, which includes the motor bridge
-(`motor-bridge.sh` started via `nohup` from ADB shell shares the session). Always restart
-the bridge after any force-stop.
+### No bridge dependency
+`facetrackadb` opens `/dev/ttyS1` via JNI directly. There is no `motor-bridge.sh` process
+to worry about. Force-stop and restart are clean.
 
 ### NEVER reboot via `adb reboot`
 Running `adb reboot` has caused WiFi to not reconnect after boot on this unit, leaving the
@@ -104,23 +106,23 @@ power-cycle the hardware instead.**
 ## 5. Remote Control via ADB Broadcast
 
 The app registers a `BroadcastReceiver` for `com.mabu.facetrack.PAUSE_TRACKING`.
-This is the primary way to control the app from the PC during testing.
+This is the primary way to stop motor output from the PC during testing.
 
 ### Pause face tracking (motors hold last position)
 ```powershell
-& "X:\Claude\android platform-tools\adb.exe" shell "am broadcast -a com.mabu.facetrack.PAUSE_TRACKING --ez paused true -p com.mabu.facetrack"
+& "X:\Claude\android platform-tools\adb.exe" shell "am broadcast -a com.mabu.facetrack.PAUSE_TRACKING --ez paused true -p com.mabu.facetrackadb"
 ```
 
 ### Resume face tracking
 ```powershell
-& "X:\Claude\android platform-tools\adb.exe" shell "am broadcast -a com.mabu.facetrack.PAUSE_TRACKING --ez paused false -p com.mabu.facetrack"
+& "X:\Claude\android platform-tools\adb.exe" shell "am broadcast -a com.mabu.facetrack.PAUSE_TRACKING --ez paused false -p com.mabu.facetrackadb"
 ```
 
 When paused, the overlay shows `*** TRACKING PAUSED ***`. When resumed it shows `tracking active`.
 
 ### Verify the broadcast was received
 ```powershell
-& "X:\Claude\android platform-tools\adb.exe" shell "logcat -d -t 50 MabuFaceTrack:I *:S"
+& "X:\Claude\android platform-tools\adb.exe" logcat -d -s MabuFaceTrack:I
 ```
 Look for: `I MabuFaceTrack: trackingPaused=true`
 

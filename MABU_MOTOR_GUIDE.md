@@ -2,7 +2,20 @@
 
 > **CRITICAL REFERENCE — load this document at the start of every Mabu session.**
 > Covers the motor protocol, wire encoding, per-motor limits and neutrals, movement directions,
-> the TCP bridge, and known gotchas. Mistakes here cause silent failures or grinding.
+> serial access, and known gotchas. Mistakes here cause silent failures or grinding.
+
+## Current State (as of 2026-06-02, session 12)
+
+**Motor control: WORKING via native JNI, no bridge required.**
+
+- App: `facetrackadb` (`com.mabu.facetrackadb`) at `X:\Claude\Mabu\facetrackadb\`
+- Serial access: native C `open("/dev/ttyS1")` via JNI (`serial.c`) — confirmed working,
+  no SELinux denial, fd opens cleanly on app start. See Section 9 for explanation.
+- TCP motor bridge (`motor-bridge.sh` on port 7777): **retired**. Still on-device but
+  no longer used by the app. Section 7 kept for reference/hardware debugging.
+- Face tracking: running and sending motor commands via native fd on each frame.
+- AdbShellBridge: investigated and abandoned. adbd on this device rejects all
+  connections originating from the device itself (any source IP). Do not attempt again.
 
 ---
 
@@ -164,10 +177,16 @@ All other units in community docs may differ — always test per unit.
 
 ---
 
-## 7. TCP Motor Bridge
+## 7. TCP Motor Bridge *(DEPRECATED — no longer needed)*
 
-The app cannot open `/dev/ttyS1` directly (SELinux blocks `untrusted_app → serial_device`).
-The bridge runs as shell context which IS allowed, and proxies TCP bytes to the serial port.
+> **As of 2026-06-02, `facetrackadb` opens `/dev/ttyS1` directly via JNI (see Section 9).**
+> The bridge and everything in this section is kept for reference and for diagnosing
+> hardware issues outside the app context. Do not use the bridge for normal operation.
+
+~~The app cannot open `/dev/ttyS1` directly (SELinux blocks `untrusted_app → serial_device`).~~
+The native JNI path bypasses this — see Section 9 for the full explanation.
+The bridge runs as shell context and is still useful for one-off hardware testing from
+adb shell without the app running.
 
 **Bridge file:** `/data/local/tmp/motor-bridge.sh`
 **Bridge port:** TCP 7777 on `0.0.0.0` (LAN-visible — no firewall currently)
@@ -346,13 +365,35 @@ Wire value from CSV: `wire = clamp(int(round(csv_value + 128)), 0, 255)`
 
 ---
 
-## 9. SELinux Notes
+## 9. SELinux Notes — Corrected 2026-06-02
 
 - `/dev/ttyS1` Unix permissions: `crwxrwxrwx` (wide open)
 - SELinux label: `u:object_r:serial_device:s0`
-- App context: `u:r:untrusted_app:s0` — **blocked by SELinux even though Unix perms allow it**
-- Shell context: `u:r:shell:s0` — **allowed** (bridge runs here)
-- `getenforce` may report "Enforcing" regardless of `ro.boot.selinux` property
+- App context: `u:r:untrusted_app:s0`
+- Shell context: `u:r:shell:s0` — allowed for all operations
+
+### What is actually blocked vs allowed for untrusted_app
+
+The SELinux policy on this device (Rockchip Android 8.1) allows `untrusted_app` to
+`open`, `read`, `write`, and `ioctl` on `serial_device`, but denies `getattr`.
+
+**Implication:**
+- **Java `FileOutputStream("/dev/ttyS1")`** → **FAILS.** Java calls `stat()` first
+  (to check if the file exists / get metadata), which requires `getattr`. SELinux
+  denies `getattr`, so an `IOException` is thrown before `open()` is ever called.
+  This is the AVC denial we recorded: `avc: denied { getattr } ... permissive=0`.
+- **Native C `open("/dev/ttyS1", O_RDWR | O_NOCTTY)`** → **SUCCEEDS.** The C call
+  goes directly to the `open(2)` syscall without a prior `stat()`. SELinux allows
+  `open` for `untrusted_app`, so it returns a valid fd. Confirmed 2026-06-02:
+  `MabuSerial: opened 57600 baud, fd=42` with zero new AVC denials in dmesg.
+
+### Practical rule
+Use JNI (`serial.c`) to access `/dev/ttyS1` from the app. Never use Java I/O.
+The TCP motor bridge is no longer needed.
+
+- `getenforce` reports "Enforcing" because it IS enforcing. `ro.boot.selinux=permissive`
+  is ignored by Android `init` on user builds. The `getattr` denial was real; the `open`
+  permission is also real (just never blocked).
 
 ---
 
@@ -360,11 +401,10 @@ Wire value from CSV: `wire = clamp(int(round(csv_value + 128)), 0, 255)`
 
 - [ ] **ASCII only in PowerShell scripts (.ps1).** NEVER use em-dashes (or any non-ASCII char) in a `.ps1` file. PowerShell 5.1 reads a UTF-8-without-BOM file as Windows-1252, so an em-dash's third byte `0x94` becomes a curly double-quote that silently terminates/reopens strings and desyncs the whole parse (cascading "Unexpected token" errors far from the real line). Use `-` or `--` instead. If a script must contain non-ASCII, save it with a UTF-8 BOM. This has bitten us multiple times.
 
-- [ ] **Command-latch: distinguish two states (Section 11).** STIFF + MUTE (zero telemetry) = hung MCU → power-cycle likely helps. STIFF + heartbeat-only + commands ignored = State B → **use direct exec+stty recovery (Section 11), NOT the bridge**. Power-cycle is not needed for State B. Read telemetry first.
+- [ ] **Use native JNI to open `/dev/ttyS1` from the app — never Java I/O.** Java calls `stat()` first, which requires `getattr`; SELinux denies `getattr` for `untrusted_app`. Native `open()` bypasses `stat()` and succeeds. See Section 9.
+- [ ] **Command-latch: distinguish two states (Section 11).** STIFF + MUTE (zero telemetry) = hung MCU → power-cycle likely helps. STIFF + heartbeat-only + commands ignored = State B → **use direct exec+stty recovery (Section 11)**. Power-cycle is not needed for State B. Read telemetry first.
 - [ ] **Cold boot: send power-on 5x with 200ms gaps + 1s wait** — single power-on does not wake the board (see Section 3 cold-boot wake-up)
-- [ ] All wake-up frames must be in ONE TCP connection (or one open of `/dev/ttyS1`) — splitting across connections has failed
-- [ ] Start bridge AFTER the app is running and paused (force-stop kills the bridge). Verify LISTEN + no ESTABLISHED client before sending.
-- [ ] Never open the bridge twice
+- [ ] All wake-up frames must be in one open of `/dev/ttyS1` (keep the fd open) — splitting across connections has failed
 - [ ] NE range is [0, 100] — do NOT limit to 50 (community docs wrong) or 18 (also wrong). Confirmed 2026-05-29.
 - [ ] EUD is inverted — lower value = eyes look UP
 - [ ] EUD soft min = 5 may cause slight grinding — raise to 8 if needed
@@ -501,9 +541,8 @@ is set so the read open/close won't drop DTR):
 ```bash
 adb shell "busybox timeout -t 5 cat /dev/ttyS1 | busybox hexdump -C"
 ```
-**Reader-vs-bridge race:** if you start a `cat` capture at the same moment the bridge does its
-`exec 3<>` re-open, the reader can attach to nothing (0-byte capture). Start the capture and wait
-~1.5 s before sending commands.
+**With `facetrackadb` running:** the app holds the port open via native fd. Reading with `cat`
+while the app is running is safe (the kernel multiplexes reads). The bridge race no longer applies.
 
 `busybox timeout` on this unit uses `-t SECONDS` (e.g. `-t 5`), NOT `timeout 5 …`.
 
