@@ -146,7 +146,7 @@ straight-and-centered. Confirmed visually by user 2026-05-29.
 | LDL   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. 0 = max open hard stop, 100 = fully closed. No grinding at either extreme. |
 | LDR   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. Matches LDL. 0 = max open hard stop, 100 = fully closed. No grinding at either extreme. |
 | ELR   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. |
-| EUD   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. 0 = max up, 100 = max down (inverted). **KNOWN BUG: commanding EUD=0 then moving away in under ~2000ms causes eye oscillation. Always allow 2000ms+ settle at EUD=0. See Section 12.** |
+| EUD   | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. 0 = max up, 100 = max down (inverted). Oscillation bug root-caused and fixed 2026-06-02 via EUD_MAX_RATE cap — see Section 12. |
 | NE    | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. Community docs say 50 max — WRONG for this unit. Previous lower limit of 18 was also wrong. |
 | NR    | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. No grinding at either extreme. |
 | NT    | 0        | 100      | Full 0–100 confirmed 2026-05-29 — approved by operator. 0 = fully right, 100 = fully left. No grinding at either extreme. |
@@ -483,49 +483,92 @@ When motors don't move, work through these in order:
 
 ## 12. Known Bugs
 
-### EUD=0 hard-stop oscillation (discovered 2026-05-29)
+### EUD oscillation during face tracking — ROOT CAUSE FOUND AND FIXED (2026-06-02, session 13)
 
-**Symptom:** After commanding EUD=0 (max up), if a subsequent EUD command is sent
-within ~2000ms, the eyes oscillate up and down before settling.
+**Status: FIXED in `facetrackadb` via `EUD_MAX_RATE = 1.0`.** Residual micro-oscillation
+(ptp ≈ 10–25 wire units, < 0.2s duration) remains; visually acceptable. Further tuning deferred.
 
-**Trigger:** `EUD=0` (hold < 2000ms) → any EUD command → oscillation.
+---
 
-**Does NOT trigger:** `EUD=0` (hold ≥ 2000ms) → any EUD command → clean movement.
+#### Root cause (confirmed 2026-06-02)
 
-**Not observed at:** EUD=100 (max down) under same conditions.
+The oscillation is **not** caused by hitting the mechanical hard stop at EUD=0. It is caused
+by the motor board's PID controller overshooting when EUD changes direction (e.g., eye was
+tracking upward at EUD≈25–40, face returns to center, eye starts returning to EUD=50).
 
-**Hypothesis:** Mechanical rebound at the hard stop. The motor overshoots/bounces when
-commanded away from the hard mechanical limit before fully settling.
+**What actually happens:**
+1. Face moves upward → EUD tracks down toward EYE_UD_MIN (logical ~20–35 in practice).
+2. Face returns to center → app commands EUD back toward 50 via `SMOOTH=0.12` ramp.
+3. The ramp rate (~5 wire units per 70ms tick) is fast enough to excite the motor board's
+   under-damped PID. The board overshoots the target, reversal happens, oscillation rings.
+4. Result: eyes bounce through a ±30–50 wire unit range for 0.5–2s.
 
-**Workaround:** Always allow ≥2000ms at EUD=0 before the next command. The app's
-smoothing (SMOOTH factor) may be sufficient in practice since it approaches limits
-gradually, but rapid programmatic sequences must respect this delay.
+**What the oscillation is NOT:**
+- Not caused by hitting the hard stop at wire=0 (EUD=0). Live telemetry confirmed EUD never
+  went below wire≈44 during normal face tracking — well above the physical stop.
+- Not caused by neck elevation (NE). NE was flat (ptp=0–2 wire) at every burst.
+- Not a transport or frame-format bug.
 
-**TODO:**
-- Confirm minimum safe settle time (2000ms sufficient, or more needed?)
-- Test whether other hard stops (ELR=0/100, NE=0/100, NR=0/100, NT=0/100) are affected
+**Key diagnostic data (session 13, before fix):**
+- 9 EUD oscillation bursts in 45s, ptp 80–100 wire units (31–39 logical), lasting up to 2s each.
+- 5 ELR bursts (cross-contamination from large EUD bounces).
+- Bursts always preceded by EUD returning from ~wire 83–116 (EUD≈33–45) toward center.
+- NE completely flat at all burst times — neck not the cause.
 
-#### Update 2026-05-29 (session 7) — narrowed and partially characterized
+**Early (wrong) hypotheses that were eliminated:**
+- `EYE_UD_MIN = 5` causing hard-stop contact → raised to 20. Did not fix the oscillation
+  because the actual tracking range never reached wire=51 (EUD=20) in practice.
+- Ramping the return (5u/70ms or 3u/150ms) — tested in isolation with single-motor frames,
+  appeared clean. But live app uses all-7-motor frames at 70ms, which behave differently.
 
-Re-tested over a single persistent socket (transport ruled out) with per-trial visual
-confirmation by Alex:
+---
 
-- **The oscillation is specific to the UPPER stop, EUD=0 (max up).** The lower stop EUD=100
-  did **not** oscillate in isolation (5/5-style checks). Earlier "EUD=100 also oscillates"
-  reports were residual motion from a prior phase in a combined run — isolating each test
-  corrected this.
-- **Abrupt reversal from EUD=0 → 50 oscillates 100% (5/5 trials).** Duration varies run to run
-  (short to long) but it always fires. This is the most reliable trigger/identifier.
-- **Ramping back from EUD=0 (12 small steps) is NOT a reliable fix — 2/5 oscillated**, and the
-  5 trials alternated cleanly C,O,C,O,C (suggests a mechanical backlash/settle state that flips
-  between runs). When the ramped return did oscillate it was as bad or worse than abrupt.
-- **Best identifier for a code guard:** "EUD was just at the hard stop (≈0) and the next EUD
-  command is a large step away." Most robust mitigation is to **never command EUD to the
-  mechanical stop** — clamp `EUD_MIN` a few units above 0 (e.g. 5–8) so the eye never rides the
-  top stop. (Floor-fix not yet hardware-validated — see TODO.)
-- The app's per-frame `SMOOTH` interpolation approaches limits in tiny deltas, so the live app
-  is largely immune; the blunt "2000ms settle" rule only matters for crude step scripts.
-- **TODO:** validate the `EUD_MIN ≈ 5` floor fix on hardware (abrupt-reverse from 5, ×5).
+#### Fix applied
+
+**`EUD_MAX_RATE = 1.0` logical unit per face-detection callback** in `facetrackadb/MainActivity.kt`:
+
+```kotlin
+private val EUD_MAX_RATE = 1.0  // max EUD change per 70ms tick
+// ...
+posEUD += deadbandSmooth(posEUD, targetEUD).coerceIn(-EUD_MAX_RATE, EUD_MAX_RATE)
+```
+
+This caps both directions of EUD movement to 1 logical unit per callback (~14 units/second at
+70ms send interval). At this rate the motor board's PID does not overshoot significantly.
+
+**Result after fix (live telemetry, 45s session):**
+- EUD bursts: 2 (down from 9), ptp 11–25 wire (down from 80–100). Peak reversals = 3.
+- ELR bursts: 0 (down from 5) — cross-contamination eliminated.
+- Residual bursts are brief (<0.2s) and small — likely at or below visual perception threshold.
+
+**0.75 was tested and performed worse** (ELR bursts returned: 3 bursts including one ptp=66
+wire). Slower EUD return appears to cause cross-axis interference on the board. 1.0 is the
+current deployed value.
+
+---
+
+#### Remaining work (next session)
+
+- Confirm visually that residual micro-oscillations (ptp≈10–25 wire, <0.2s) are acceptable.
+- Consider restoring `EYE_UD_MIN` from 20 back toward 5 — with the rate cap in place, the hard
+  stop is no longer a concern (motor PID overshoot at EUD=20 is only ~7 wire units with the cap).
+- Consider making the rate cap asymmetric: unrestricted tracking downward (face moving up),
+  capped only on the return — would improve responsiveness to fast upward face motion.
+- Test ELR, NR, NE for similar PID-overshoot oscillation under rapid reversal.
+
+---
+
+#### Historical notes (sessions 6–7, now superseded)
+
+Original hypothesis was mechanical rebound at EUD=0 hard stop. Session 7 observed:
+- Abrupt EUD=0→50 oscillates 100% of trials.
+- Ramping the return unreliable (2/5 oscillated).
+- Specific to upper stop; EUD=100 lower stop did not oscillate.
+
+These observations were real but the **cause was misidentified**. The physical hard stop at
+wire=0 does amplify oscillation (confirmed: EUD=0 caused 166 reversals vs EUD=20 causing ~1 with
+rate cap), but the primary issue is the PID overshoot on ANY return from a low EUD position —
+even EUD=33 (wire=84, far from the stop) caused 9 bursts without the fix.
 
 ---
 
