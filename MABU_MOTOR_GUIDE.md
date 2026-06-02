@@ -547,14 +547,31 @@ current deployed value.
 
 ---
 
-#### Remaining work (next session)
+#### Follow-up tuning (2026-06-02, session 14) — RESOLVED
 
-- Confirm visually that residual micro-oscillations (ptp≈10–25 wire, <0.2s) are acceptable.
-- Consider restoring `EYE_UD_MIN` from 20 back toward 5 — with the rate cap in place, the hard
-  stop is no longer a concern (motor PID overshoot at EUD=20 is only ~7 wire units with the cap).
-- Consider making the rate cap asymmetric: unrestricted tracking downward (face moving up),
-  capped only on the return — would improve responsiveness to fast upward face motion.
-- Test ELR, NR, NE for similar PID-overshoot oscillation under rapid reversal.
+**Visual confirmation:** residual micro-oscillations (ptp≈10–25 wire) are visually acceptable.
+
+**EYE_UD_MIN floor tuning:**
+- Lowering to 5.0 still produced occasional oscillation — the physical stop at wire≈0 is close
+  enough that the rate cap alone doesn't fully prevent PID bounce at that floor.
+- **Settled on `EYE_UD_MIN = 10.0`** as the practical minimum. Gives meaningful additional upward
+  eye range compared to the old 20.0 floor while keeping enough buffer from the stop.
+
+**Y_OFFSET asymmetry — UD neck trigger fix:**
+The camera is fixed to Mabu's head at a steep upward angle, requiring `Y_OFFSET = -0.70` to
+correct the tracking center. This creates a permanent asymmetry in the UD axis:
+- **Upward** (face high in frame): effective effort `ay = yNorm - 0.70` can reach −1.0+, giving
+  full effort and cleanly triggering the neck at the shared `EYE_NECK_TRIGGER = 0.60`.
+- **Downward** (face low in frame): maximum `yNorm ≈ 1.0`, so `ay ≤ 1.0 − 0.70 = 0.30`. The
+  shared 0.60 trigger is **unreachable** when looking down — neck can never engage.
+
+Fix: separate neck trigger for the UD axis, `UD_NECK_TRIGGER = 0.20`, passed to
+`computeEyeNeckAxis` as a parameter. LR axis keeps `EYE_NECK_TRIGGER = 0.60`.
+Result: neck now engages when looking down; no change to horizontal tracking behavior.
+
+**Remaining open items:**
+- Asymmetric rate cap (uncapped downward tracking, capped only on return) — not yet tested.
+- ELR, NR, NE oscillation testing under rapid reversal — not yet done.
 
 ---
 
@@ -578,14 +595,18 @@ The motor board is **NOT silent** — it continuously transmits status frames on
 This is a useful, camera-free signal for detecting movement, oscillation, and the latch state.
 
 ### How to read it
-The TCP bridge is **one-way** (`nc -l -p 7777 >&3` only copies TCP→serial). To see board output,
-read the device directly from adb shell (safe while the bridge holds the port, because `-hupcl`
-is set so the read open/close won't drop DTR):
+
+> ⚠️ **CRITICAL: Do NOT open `/dev/ttyS1` from `adb shell` while `facetrackadb` is running.**
+> `termios` settings are shared across all file descriptions on a character device. Opening a
+> second fd from adb shell and running `busybox stty` on it overwrites the baud rate / mode
+> settings that the app set on its fd. Result: app sends frames but the motor board can no longer
+> parse them — motors go silent. **Recovery: `am force-stop` + restart the app.**
+> Safe diagnostic path while the app is running: **logcat only** (see Section 14).
+
+To read telemetry when the app is **not** running (e.g. for standalone hardware testing):
 ```bash
-adb shell "busybox timeout -t 5 cat /dev/ttyS1 | busybox hexdump -C"
+adb shell "exec 3<>/dev/ttyS1; busybox stty -F /dev/ttyS1 57600 raw -hupcl; busybox timeout -t 5 cat <&3 | busybox hexdump -C"
 ```
-**With `facetrackadb` running:** the app holds the port open via native fd. Reading with `cat`
-while the app is running is safe (the kernel multiplexes reads). The bridge race no longer applies.
 
 `busybox timeout` on this unit uses `-t SECONDS` (e.g. `-t 5`), NOT `timeout 5 …`.
 
