@@ -19,6 +19,8 @@
   connections originating from the device itself (any source IP). Do not attempt again.
 - **Asymmetric EUD rate cap deployed** — downward tracking (EUD falling) is free; return to center (EUD rising) capped at 1.0/tick. See Section 12.
 - **Tracking responsiveness tuned** — `SMOOTH=0.30`, `SEND_INTERVAL_MS=50ms`. See Section 14.
+- **Face-loss return-to-neutral** — 750ms grace period, then smooth drift back to neutral. See Section 14.
+- **ML Kit tracking enabled** — `enableTracking()` + `minFaceSize=0.10` for better motion detection. See Section 14.
 
 ---
 
@@ -663,11 +665,19 @@ values as of 2026-06-03 (session 15), confirmed working on this unit.
 | `DEADBAND` | `1.5` | Motor-unit threshold below which corrections are ignored (suppresses face-detection jitter). |
 | `SEND_INTERVAL_MS` | `50` | Minimum ms between motor writes. Caps motor update rate at ~20 Hz. |
 | `EUD_MAX_RATE` | `1.0` | Max EUD change per tick **on return to center only** (asymmetric cap). Prevents PID overshoot. Downward tracking is uncapped. |
+| `FACE_LOSS_GRACE_MS` | `750` | Ms of no detection before return-to-neutral begins. Absorbs brief drops from blinks/motion blur without reacting. |
 
 **Tuning SMOOTH:** The face detector runs at ~10 Hz on this hardware. With `SMOOTH=0.30` and
 `SEND_INTERVAL_MS=50ms`, a 15-unit error closes to within deadband in ~5 ticks (~250ms) —
 noticeably responsive without being jerky. Previous value of 0.12 took ~18 ticks (~1.3s) to
 settle, causing visible tracking lag.
+
+**Face-loss behavior:** When no face is detected, the app holds the last commanded position for
+`FACE_LOSS_GRACE_MS` (750ms). After that, on each detection tick it applies `deadbandSmooth`
+toward all neutrals (ELR/NR → 50, EUD → 50, NE → NE_NEUTRAL) using the same SMOOTH rate, with
+the EUD asymmetric cap applied on the upward return. This prevents the head from holding an
+extreme position during detection gaps, which was causing PID overshoot oscillation when tracking
+resumed. `lastFaceMs` is updated on every successful detection; the grace clock resets immediately.
 
 ### Eye/neck soft limits
 
@@ -695,4 +705,6 @@ settle, causing visible tracking lag.
 | `X_OFFSET` | `0.0` | No horizontal compensation needed on this unit. |
 | `ELR_GAIN` | `1.4` | Scales xNorm (max ≈ ±0.7 in practice) to fill ±1.0 effort range. |
 | Camera resolution | `320×240` | Smallest available — keeps ML Kit latency low on Mabu's CPU. |
-| ML Kit mode | `PERFORMANCE_MODE_FAST` | No landmarks, no classification, minFaceSize=0.15. |
+| ML Kit mode | `PERFORMANCE_MODE_FAST` | No landmarks, no classification. |
+| `minFaceSize` | `0.10f` | Min face width as fraction of frame (32px at 320 wide). Was 0.15 (48px) — too large, caused loss at distance or near frame edges. |
+| `enableTracking()` | enabled | ML Kit maintains a face model across frames using temporal prediction. Dramatically reduces detection loss during fast motion or partial blur. Safe for single-person tracking; the doc note about "accuracy loss with overlapping faces" does not apply here. |
