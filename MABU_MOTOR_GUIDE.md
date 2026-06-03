@@ -4,23 +4,21 @@
 > Covers the motor protocol, wire encoding, per-motor limits and neutrals, movement directions,
 > serial access, and known gotchas. Mistakes here cause silent failures or grinding.
 
-## Current State (as of 2026-06-03, session 15)
+## Current State (as of 2026-06-03, session 18)
 
 **Motor control: WORKING via native JNI, no bridge required.**
 
 - App: `facetrackadb` (`com.mabu.facetrackadb`) at `X:\Claude\Mabu\facetrackadb\`
-- `facetrackadb` is the **sole home launcher** — auto-starts on every boot. `com.mabu.facetrack` (old TCP bridge app) fully uninstalled.
-- Serial access: native C `open("/dev/ttyS1")` via JNI (`serial.c`) — confirmed working,
-  no SELinux denial, fd opens cleanly on app start. See Section 9 for explanation.
-- TCP motor bridge (`motor-bridge.sh` on port 7777): **retired**. Still on-device but
-  no longer used by the app. Section 7 kept for reference/hardware debugging.
-- Face tracking: running and sending motor commands via native fd on each frame.
-- AdbShellBridge: investigated and abandoned. adbd on this device rejects all
-  connections originating from the device itself (any source IP). Do not attempt again.
-- **Asymmetric EUD rate cap deployed** — downward tracking (EUD falling) is free; return to center (EUD rising) capped at 1.0/tick. See Section 12.
-- **Tracking responsiveness tuned** — `SMOOTH=0.30`, `SEND_INTERVAL_MS=50ms`. See Section 14.
-- **Face-loss return-to-neutral** — 750ms grace period, then smooth drift back to neutral. See Section 14.
-- **ML Kit tracking enabled** — `enableTracking()` + `minFaceSize=0.10` for better motion detection. See Section 14.
+- `facetrackadb` is the **sole home launcher** — auto-starts on every boot.
+- Serial access: native C `open("/dev/ttyS1")` via JNI. No SELinux denial, no bridge.
+- **Bounds filter + tracking-ID hysteresis** (session 17) — `|xNorm|>1.0` or `|yNorm|>1.0` faces rejected; new IDs must persist 4 consecutive frames before accepted.
+- **Asymmetric EUD rate cap** (session 13) — `EUD_MAX_RATE=1.0` on return to center only. See Section 12.
+- **NE rate cap added** (session 18) — `NE_MAX_RATE=1.0` on return to neutral only, mirroring EUD. Targets the 16% reversal rate measured on NE in session 18 telemetry.
+- **ID-transition slew window** (session 18) — when a new tracking ID is confirmed, all 4 motors are clamped to ±2.0 units/tick for 10 ticks (~500ms) to absorb the input jump.
+- **Camera moved to dedicated `mabu-camera-vision` HandlerThread** (session 18) at `THREAD_PRIORITY_BACKGROUND - 5` (nice +5). Mirrors Kendrick's pattern in `mabu-anima` — keeps all 4 cores available but lets future audio (URGENT_AUDIO = -19) preempt the ~35ms face inference.
+- **4 callback buffers** (was 2) — reduces backpressure drops to ~1/50 frames.
+- **Debug overlay rate-limited to 4Hz** — main-thread TextView re-layout per frame was preempting the camera thread; this killed the ≥120ms inference outlier tail.
+- **Three-tier perf instrumentation** in place — HAL arrival cadence, ML Kit inference time + histogram, end-to-end pipeline interval. Logged every 50 frames (~5s). See Section 15.
 
 ---
 
@@ -665,7 +663,11 @@ values as of 2026-06-03 (session 15), confirmed working on this unit.
 | `DEADBAND` | `1.5` | Motor-unit threshold below which corrections are ignored (suppresses face-detection jitter). |
 | `SEND_INTERVAL_MS` | `50` | Minimum ms between motor writes. Caps motor update rate at ~20 Hz. |
 | `EUD_MAX_RATE` | `1.0` | Max EUD change per tick **on return to center only** (asymmetric cap). Prevents PID overshoot. Downward tracking is uncapped. |
+| `NE_MAX_RATE` | `1.0` | Max NE change per tick **on return to neutral only** (delta < 0). Mirrors EUD treatment after session 18 telemetry showed NE reversal rate at 16% (vs NR at 8%). |
+| `ID_TRANSITION_FRAMES` / `ID_TRANSITION_MAX_RATE` | `10` / `2.0` | After a new tracking ID is confirmed, all 4 motors are slew-capped at ±2.0/tick for 10 ticks (~500ms). Soaks the input jump when the tracker swaps to a face that may be reported at a different position. |
+| `TRACKING_CONFIRM_FRAMES` | `4` | Hysteresis: a new ID must persist for 4 consecutive frames before being accepted (~400ms at 10fps). Filters 1–3-frame phantom detections without delaying legitimate re-acquisition meaningfully. |
 | `FACE_LOSS_GRACE_MS` | `750` | Ms of no detection before return-to-neutral begins. Absorbs brief drops from blinks/motion blur without reacting. |
+| `OVERLAY_INTERVAL_MS` | `250` | Debug overlay text update rate-limit (4 Hz). Per-frame TextView updates triggered main-thread re-layout work that preempted the camera thread; rate-limiting eliminated the worst inference outliers (≥120ms bucket dropped to 0). |
 
 **Tuning SMOOTH:** The face detector runs at ~10 Hz on this hardware. With `SMOOTH=0.30` and
 `SEND_INTERVAL_MS=50ms`, a 15-unit error closes to within deadband in ~5 ticks (~250ms) —
@@ -708,3 +710,48 @@ resumed. `lastFaceMs` is updated on every successful detection; the grace clock 
 | ML Kit mode | `PERFORMANCE_MODE_FAST` | No landmarks, no classification. |
 | `minFaceSize` | `0.10f` | Min face width as fraction of frame (32px at 320 wide). Was 0.15 (48px) — too large, caused loss at distance or near frame edges. |
 | `enableTracking()` | enabled | ML Kit maintains a face model across frames using temporal prediction. Dramatically reduces detection loss during fast motion or partial blur. Safe for single-person tracking; the doc note about "accuracy loss with overlapping faces" does not apply here. |
+
+---
+
+## 15. Face-tracking Performance — Hardware Ceiling (session 18, 2026-06-03)
+
+Definitive measurements with three-tier instrumentation (HAL arrival, ML Kit inference, end-to-end pipeline). All numbers from a clean run with no audio/voice load.
+
+### Numbers
+
+| Stage | Avg | Max | Notes |
+|---|---|---|---|
+| **HAL arrival** (handleFrame cadence) | 100 ms (10.0 fps) | 117–121 ms | Camera HAL delivers frames at a tight, fixed ~10 fps cadence. Very stable (jitter ±15 ms). |
+| **ML Kit inference** | 33–37 ms | 85–110 ms | ~70% of frames are ≤40 ms; long tail ~20% at 60–110 ms (GC / thermal / ML Kit internal variance). |
+| **End-to-end pipeline interval** | 103–110 ms | 173–208 ms | 200 ms outliers correspond 1:1 with backpressure drops — when inference goes long, the next HAL frame arrives during `busy=true` and is dropped, doubling the next interval. |
+
+### Findings
+
+1. **The HAL is a hard ceiling at ~10 fps.** Camera advertises 24 fps in `supportedPreviewFpsRange` (`[24000-24000]` mHz) and accepts the request — but actually delivers 10 fps. No userland change can lift this.
+2. **ML Kit inference on RK3288 averages ~35 ms** at 320×240 with `PERFORMANCE_MODE_FAST` and no landmarks/contours/classification. Kendrick's `mabu-anima` code comments cite ~109 ms — but that was under WebRTC audio load with detection deprioritized; uncontended, it's ~3× faster.
+3. **`PERFORMANCE_MODE_ACCURATE` is not worth it** on this hardware. Inference would jump to 100+ ms, exceeding the 100 ms HAL slot every frame → constant drops → effective fps drops below 10. Stay on FAST.
+4. **Buffer pool of 4** (was 2) reduces backpressure drops from ~6% to ~2%. Marginal but real. Going higher gives diminishing returns.
+5. **Camera thread priority matters for audio coexistence.** ML Kit lazily spawns its inference worker pool on the FIRST `detector.process()` call, and the workers inherit the calling thread's nice value. Opening the camera on the `mabu-camera-vision` HandlerThread at nice +5 means future URGENT_AUDIO threads (nice -19) will preempt face detection. Required pattern when audio/voice work lands.
+
+### Diagnostic playbook (when "tracking feels off")
+
+Read the three Logcat lines emitted every ~5 s:
+
+```
+Camera1Source: hal n=50  arrival avg=99.9ms max=119ms (10.0 fps)  dropped=1/50
+MabuFaceTrack: perf n=50  inference avg=33ms max=85ms | interval avg=103ms max=180ms | nativeHeap=14MB
+MabuFaceTrack: infer-histogram <20:19 <30:8 <40:7 <50:2 <60:3 <80:9 <120:2 ≥120:0
+```
+
+Interpretation:
+- **HAL arrival far from 100 ms or `dropped > 5/50`** → camera or buffer issue. Check `handleFrame` is being called from `mabu-camera-vision` thread.
+- **Inference avg > 50 ms or ≥120 ms bucket > 0** → CPU contention. Check if anything else is running (TTS, LLM, app overlay updating per frame). The overlay rate-limit is the canonical fix; restore it if disabled.
+- **Pipeline interval max ≫ 200 ms** → multiple consecutive drops. Investigate inference tail and GC; consider reducing per-frame allocations.
+- **Native heap growing every window** → leak. Should stay ~13–15 MB indefinitely.
+
+### Future levers (NOT pulled yet — out of scope for current session)
+
+- Pre-allocate the per-frame `InputImage` byte buffer to remove that allocation from the GC hot path.
+- Replace ML Kit with a smaller tflite face detector (Mobile FaceNet variants run in ~10 ms on Cortex-A17). Would unlock 30+ fps if HAL cooperated — but HAL is the cap, so the practical gain is just CPU headroom for other work.
+- Roll a custom across-frame tracker (bbox IoU + velocity prior) on top of ML Kit detections, treating ML Kit as a per-frame detector. Most likely real lever for ID-churn problem, since we can't get more frames.
+
