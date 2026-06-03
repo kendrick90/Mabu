@@ -88,9 +88,9 @@ Start-Sleep -Seconds 1
 ## 4. App Lifecycle Quirks
 
 ### The home launcher
-`com.mabu.facetrack` (the old TCP-bridge app) was set as the Android HOME launcher and
-auto-restarts after force-stop. `com.mabu.facetrackadb` is **not** the home launcher —
-start it explicitly with `am start` after each boot or install.
+`com.mabu.facetrackadb` **is** the Android HOME launcher — it auto-starts on every boot
+and relaunches after force-stop. After `am force-stop`, wait ~2s for the launcher to
+restart before sending further commands.
 
 ### No bridge dependency
 `facetrackadb` opens `/dev/ttyS1` via JNI directly. There is no `motor-bridge.sh` process
@@ -105,17 +105,17 @@ power-cycle the hardware instead.**
 
 ## 5. Remote Control via ADB Broadcast
 
-The app registers a `BroadcastReceiver` for `com.mabu.facetrack.PAUSE_TRACKING`.
+The app registers a `BroadcastReceiver` for `com.mabu.facetrackadb.PAUSE_TRACKING`.
 This is the primary way to stop motor output from the PC during testing.
 
 ### Pause face tracking (motors hold last position)
 ```powershell
-& "X:\Claude\android platform-tools\adb.exe" shell "am broadcast -a com.mabu.facetrack.PAUSE_TRACKING --ez paused true -p com.mabu.facetrackadb"
+& "X:\Claude\android platform-tools\adb.exe" shell "am broadcast -a com.mabu.facetrackadb.PAUSE_TRACKING --ez paused true -p com.mabu.facetrackadb"
 ```
 
 ### Resume face tracking
 ```powershell
-& "X:\Claude\android platform-tools\adb.exe" shell "am broadcast -a com.mabu.facetrack.PAUSE_TRACKING --ez paused false -p com.mabu.facetrackadb"
+& "X:\Claude\android platform-tools\adb.exe" shell "am broadcast -a com.mabu.facetrackadb.PAUSE_TRACKING --ez paused false -p com.mabu.facetrackadb"
 ```
 
 When paused, the overlay shows `*** TRACKING PAUSED ***`. When resumed it shows `tracking active`.
@@ -166,10 +166,11 @@ foreground. Since `com.mabu.facetrack` is the HOME launcher it is always in the 
 ### Camera: use Camera1 API only
 Mabu's camera HAL is a Camera1 shim. CameraX fails on this hardware. Use `Camera1Source.kt`.
 
-### SELinux blocks serial port access from app
-`/dev/ttyS1` is blocked by SELinux for `untrusted_app` context. The motor bridge
-workaround (TCP socket to shell-context proxy) is the canonical solution.
-See `MABU_MOTOR_GUIDE.md` for details.
+### SELinux and serial port access
+SELinux denies `getattr` for `untrusted_app → serial_device`, but allows `open/read/write`.
+Java `FileOutputStream` calls `stat()` first (needs `getattr`) and fails. Native C `open()`
+bypasses `stat()` and succeeds. **Use JNI (`serial.c`) — never Java I/O for `/dev/ttyS1`.**
+The TCP motor bridge workaround is no longer needed. See `MABU_MOTOR_GUIDE.md` Section 9.
 
 ---
 
@@ -202,37 +203,43 @@ must be paused to prevent the app fighting your commands:
 $adb = "X:\Claude\android platform-tools\adb.exe"
 
 # 1. Pause tracking
-& $adb shell "am broadcast -a com.mabu.facetrack.PAUSE_TRACKING --ez paused true -p com.mabu.facetrack"
+& $adb shell "am broadcast -a com.mabu.facetrackadb.PAUSE_TRACKING --ez paused true -p com.mabu.facetrackadb"
 
 # 2. Send your motor test commands (see MABU_MOTOR_GUIDE.md)
 # ...
 
 # 3. Resume when done
-& $adb shell "am broadcast -a com.mabu.facetrack.PAUSE_TRACKING --ez paused false -p com.mabu.facetrack"
+& $adb shell "am broadcast -a com.mabu.facetrackadb.PAUSE_TRACKING --ez paused false -p com.mabu.facetrackadb"
 ```
 
 The overlay will confirm the state. Motors hold their last commanded position while paused.
 
 ---
 
-## 10. Stale Values in MabuFaceTrack (as of 2026-05-29)
+## 10. Telemetry Capture (logcat)
 
-The following calibration values in `MainActivity.kt` are out of date compared to
-confirmed hardware testing. Update before shipping:
+Capture motor and face-tracking telemetry to a file for offline analysis:
 
-| Variable | Current value | Confirmed value | Notes |
-|----------|--------------|-----------------|-------|
-| `EYE_SOFT_MIN` | 15.0 | 0.0 | Full range confirmed |
-| `EYE_SOFT_MAX` | 85.0 | 100.0 | Full range confirmed |
-| `NECK_MIN` | 20.0 | 0.0 | Full range confirmed |
-| `NECK_MAX` | 80.0 | 100.0 | Full range confirmed |
-| `NE_MIN` | 18.0 | 0.0 | Full range confirmed |
-| `EYELID_NEUTRAL` (in MabuMotors) | 25 | 20 | operator-approved 2026-05-29 |
-| `NE_NEUTRAL` (in MabuMotors) | 25 | 50 | operator-approved 2026-05-29 |
-| `NR_NEUTRAL` (in MabuMotors) | 42 | 50 | operator-approved 2026-05-29 |
-| `NT` hardcoded in `moveAll` | 50.0 | 50.0 | Confirmed neutral — already correct |
-| `NE_MIN` | 18.0 | 0.0 | Full range confirmed |
-| `EYE_SOFT_MIN` | 15.0 | 0.0 | Full range confirmed |
-| `EYE_SOFT_MAX` | 85.0 | 100.0 | Full range confirmed |
-| `NECK_MIN` | 20.0 | 0.0 | Full range confirmed |
-| `NECK_MAX` | 80.0 | 100.0 | Full range confirmed |
+```powershell
+$adb = "X:\Claude\android platform-tools\adb.exe"
+$out = "X:\Claude\Mabu\telemetry\session_YYMMDDx.log"
+
+# Start capture in background (runs until killed)
+$job = Start-Job { & $using:adb shell "logcat -s MabuFaceTrack:D -v time 2>&1" | Out-File $using:out -Encoding utf8 }
+
+# ... let it run for 2 minutes ...
+
+# Stop capture
+Get-Process adb | Sort-Object StartTime | Select-Object -Last 1 | Stop-Process -Force
+
+# Analyse: count IoU match events and reversal rates
+$lines = Get-Content $out
+($lines | Select-String "IoU match:").Count        # ML Kit ID swaps absorbed without freeze
+($lines | Select-String "new face ID").Count        # genuine new face acquisitions (slew fired)
+```
+
+Key log lines to watch:
+- `IoU match: ID X -> Y (IoU=0.xx, no hysteresis)` — same face, ML Kit changed ID, no motor freeze
+- `new face ID N confirmed (IoU=0.00, slew 10f)` — genuine new face, slew window fired
+- `perf n=50 inference avg=...` — HAL and inference timing (every ~5s)
+- `hal n=50 arrival avg=...` — camera HAL cadence (should be ~100ms / 10fps)

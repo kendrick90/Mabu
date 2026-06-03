@@ -4,7 +4,7 @@
 > Covers the motor protocol, wire encoding, per-motor limits and neutrals, movement directions,
 > serial access, and known gotchas. Mistakes here cause silent failures or grinding.
 
-## Current State (as of 2026-06-03, session 18)
+## Current State (as of 2026-06-03, session 19)
 
 **Motor control: WORKING via native JNI, no bridge required.**
 
@@ -13,8 +13,10 @@
 - Serial access: native C `open("/dev/ttyS1")` via JNI. No SELinux denial, no bridge.
 - **Bounds filter + tracking-ID hysteresis** (session 17) — `|xNorm|>1.0` or `|yNorm|>1.0` faces rejected; new IDs must persist 4 consecutive frames before accepted.
 - **Asymmetric EUD rate cap** (session 13) — `EUD_MAX_RATE=1.0` on return to center only. See Section 12.
-- **NE rate cap added** (session 18) — `NE_MAX_RATE=1.0` on return to neutral only, mirroring EUD. Targets the 16% reversal rate measured on NE in session 18 telemetry.
+- **NE rate cap** (session 18) — `NE_MAX_RATE=1.0` on return to neutral only, mirroring EUD.
 - **ID-transition slew window** (session 18) — when a new tracking ID is confirmed, all 4 motors are clamped to ±2.0 units/tick for 10 ticks (~500ms) to absorb the input jump.
+- **IoU cross-frame tracker** (session 19) — maintains bbox + velocity estimate independent of ML Kit IDs. When ML Kit reassigns an ID to the same physical face, IoU with the predicted position is high → accepted immediately with no hysteresis wait and no slew window. Only a genuinely new face (IoU < 0.30) triggers hysteresis + slew. See Section 14.
+- **FACE_LOSS_GRACE_MS = 1000ms** (session 19, raised from 750ms) — longer window for the IoU tracker to match a face that was briefly lost and reappears with a new ML Kit ID.
 - **Camera moved to dedicated `mabu-camera-vision` HandlerThread** (session 18) at `THREAD_PRIORITY_BACKGROUND - 5` (nice +5). Mirrors Kendrick's pattern in `mabu-anima` — keeps all 4 cores available but lets future audio (URGENT_AUDIO = -19) preempt the ~35ms face inference.
 - **4 callback buffers** (was 2) — reduces backpressure drops to ~1/50 frames.
 - **Debug overlay rate-limited to 4Hz** — main-thread TextView re-layout per frame was preempting the camera thread; this killed the ≥120ms inference outlier tail.
@@ -664,10 +666,41 @@ values as of 2026-06-03 (session 15), confirmed working on this unit.
 | `SEND_INTERVAL_MS` | `50` | Minimum ms between motor writes. Caps motor update rate at ~20 Hz. |
 | `EUD_MAX_RATE` | `1.0` | Max EUD change per tick **on return to center only** (asymmetric cap). Prevents PID overshoot. Downward tracking is uncapped. |
 | `NE_MAX_RATE` | `1.0` | Max NE change per tick **on return to neutral only** (delta < 0). Mirrors EUD treatment after session 18 telemetry showed NE reversal rate at 16% (vs NR at 8%). |
-| `ID_TRANSITION_FRAMES` / `ID_TRANSITION_MAX_RATE` | `10` / `2.0` | After a new tracking ID is confirmed, all 4 motors are slew-capped at ±2.0/tick for 10 ticks (~500ms). Soaks the input jump when the tracker swaps to a face that may be reported at a different position. |
-| `TRACKING_CONFIRM_FRAMES` | `4` | Hysteresis: a new ID must persist for 4 consecutive frames before being accepted (~400ms at 10fps). Filters 1–3-frame phantom detections without delaying legitimate re-acquisition meaningfully. |
-| `FACE_LOSS_GRACE_MS` | `750` | Ms of no detection before return-to-neutral begins. Absorbs brief drops from blinks/motion blur without reacting. |
+| `ID_TRANSITION_FRAMES` / `ID_TRANSITION_MAX_RATE` | `10` / `2.0` | After a **genuinely new** face is confirmed (IoU miss), all 4 motors are slew-capped at ±2.0/tick for 10 ticks (~500ms). IoU-matched ID changes do NOT fire this — the face didn't actually jump. |
+| `TRACKING_CONFIRM_FRAMES` | `4` | Hysteresis: a new ID must persist for 4 consecutive frames before being accepted (~400ms at 10fps). Only applies when IoU check also fails (IoU < 0.30). |
+| `FACE_LOSS_GRACE_MS` | `1000` | Ms of no detection before return-to-neutral begins. Raised from 750ms in session 19 — longer window gives the IoU tracker more opportunity to match a briefly-lost face on re-detection rather than resetting to null and running full hysteresis. |
 | `OVERLAY_INTERVAL_MS` | `250` | Debug overlay text update rate-limit (4 Hz). Per-frame TextView updates triggered main-thread re-layout work that preempted the camera thread; rate-limiting eliminated the worst inference outliers (≥120ms bucket dropped to 0). |
+| `TRACKER_IOU_THRESHOLD` | `0.30` | IoU cross-frame tracker match threshold. Detections with IoU ≥ 0.30 against the velocity-predicted bbox are treated as the same physical face regardless of ML Kit's tracking ID. |
+| `TRACKER_VEL_SMOOTH` | `0.3` | EMA weight for the per-frame velocity estimate used in the IoU prediction. |
+
+### IoU cross-frame tracker (session 19)
+
+ML Kit's `enableTracking()` maintains face IDs across frames but reassigns them every ~3–5s due to
+detection gaps, blinks, or partial occlusion. Each reassignment previously triggered 4-frame
+hysteresis (~400ms motor freeze) plus the 500ms slew window — visible as a jolt.
+
+The IoU tracker maintains its own `trackerBbox` (normalized [0,1] bbox of the last accepted face)
+plus an EMA velocity estimate (`trackerVelX`, `trackerVelY`). On each detection:
+
+1. Predict bbox position: shift `trackerBbox` by the current velocity estimate.
+2. Compute IoU between the predicted bbox and the new detection.
+3. If IoU ≥ 0.30 → same physical face. Accept immediately, update `confirmedTrackingId` to the
+   new ML Kit ID, skip hysteresis and slew window entirely.
+4. If IoU < 0.30 → genuinely new face. Run 4-frame hysteresis as before; on confirm, fire slew
+   window and reset velocity.
+
+**Session 19 telemetry results (110s run vs session 18 baseline):**
+
+| Motor | Session 18 baseline | Session 19 (all fixes + IoU) |
+|-------|--------------------|-----------------------------|
+| ELR   | ~12% reversal      | **5.2%** (−57%)             |
+| EUD   | ~9%                | **5.4%** (−40%)             |
+| NR    | ~8%                | **2.0%** (−75%)             |
+| NE    | ~16%               | **5.1%** (−68%)             |
+
+19 IoU matches observed in a 111s run (session 19b) — each is a seamless ID transition that
+would previously have been a 400ms freeze + 500ms slew. All genuine new-face events showed
+IoU=0.00, confirming the threshold produces no false positives in normal use.
 
 **Tuning SMOOTH:** The face detector runs at ~10 Hz on this hardware. With `SMOOTH=0.30` and
 `SEND_INTERVAL_MS=50ms`, a 15-unit error closes to within deadband in ~5 ticks (~250ms) —
