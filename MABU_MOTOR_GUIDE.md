@@ -569,9 +569,25 @@ Fix: separate neck trigger for the UD axis, `UD_NECK_TRIGGER = 0.20`, passed to
 `computeEyeNeckAxis` as a parameter. LR axis keeps `EYE_NECK_TRIGGER = 0.60`.
 Result: neck now engages when looking down; no change to horizontal tracking behavior.
 
+**Floor setting is irrelevant to oscillation (confirmed 2026-06-02, session 14):**
+Extensive floor testing (5.0, 7.5, 10.0) found oscillation at all values. Logcat analysis showed
+`posEUD` reaches ~11 naturally from face tracking — neither the 5.0 nor 10.0 floor was ever hit.
+The PID overshoot fires on any return from a low EUD position (~11–15) toward center, regardless
+of the floor clamp. **`EYE_UD_MIN = 5.0` is the deployed value** (5 vs 10 makes no difference to
+oscillation; 5 gives more upward range).
+
+**UD_NECK_TRIGGER settled at 0.05** (down from 0.20). At 0.20 the neck was barely responsive
+looking down (max neckFrac ≈ 12.5%); at 0.05 the neck reaches ~26% of range at maximum downward
+effort, which is visibly effective.
+
 **Remaining open items:**
-- Asymmetric rate cap (uncapped downward tracking, capped only on return) — not yet tested.
-- ELR, NR, NE oscillation testing under rapid reversal — not yet done.
+1. **Asymmetric EUD rate cap** — the root fix for residual oscillation. Uncap downward tracking
+   (face moving up → EUD falls freely), rate-cap only the return toward center (EUD rising toward 50).
+   Current symmetric cap of 1.0/tick slows both directions equally; upward return is what excites
+   the PID, not the downward approach.
+2. **Tracking smoothness** — overall tracking is functional but needs smoother motion. SMOOTH=0.12
+   and DEADBAND=1.5 are the current values; likely candidates for tuning next session.
+3. ELR, NR, NE oscillation testing under rapid reversal — not yet done.
 
 ---
 
