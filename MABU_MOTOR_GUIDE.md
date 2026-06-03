@@ -4,11 +4,12 @@
 > Covers the motor protocol, wire encoding, per-motor limits and neutrals, movement directions,
 > serial access, and known gotchas. Mistakes here cause silent failures or grinding.
 
-## Current State (as of 2026-06-02, session 12)
+## Current State (as of 2026-06-03, session 15)
 
 **Motor control: WORKING via native JNI, no bridge required.**
 
 - App: `facetrackadb` (`com.mabu.facetrackadb`) at `X:\Claude\Mabu\facetrackadb\`
+- `facetrackadb` is the **sole home launcher** — auto-starts on every boot. `com.mabu.facetrack` (old TCP bridge app) fully uninstalled.
 - Serial access: native C `open("/dev/ttyS1")` via JNI (`serial.c`) — confirmed working,
   no SELinux denial, fd opens cleanly on app start. See Section 9 for explanation.
 - TCP motor bridge (`motor-bridge.sh` on port 7777): **retired**. Still on-device but
@@ -16,6 +17,8 @@
 - Face tracking: running and sending motor commands via native fd on each frame.
 - AdbShellBridge: investigated and abandoned. adbd on this device rejects all
   connections originating from the device itself (any source IP). Do not attempt again.
+- **Asymmetric EUD rate cap deployed** — downward tracking (EUD falling) is free; return to center (EUD rising) capped at 1.0/tick. See Section 12.
+- **Tracking responsiveness tuned** — `SMOOTH=0.30`, `SEND_INTERVAL_MS=50ms`. See Section 14.
 
 ---
 
@@ -205,7 +208,7 @@ manual test or it will contend for the bridge slot and cause short-write storms.
 
 **Preferred method — PAUSE tracking (app stays alive but silent):**
 ```bash
-adb shell "am broadcast -a com.mabu.facetrack.PAUSE_TRACKING --ez paused true -p com.mabu.facetrack"
+adb shell "am broadcast -a com.mabu.facetrackadb.PAUSE_TRACKING --ez paused true -p com.mabu.facetrackadb"
 ```
 
 **If a full restart is needed:** force-stop kills the bridge too — always restart the bridge AFTER
@@ -230,11 +233,11 @@ The proven, repeatable sequence for taking reliable manual control. Verified twi
 A="/path/to/adb"   # e.g. "X:/Claude/android platform-tools/adb.exe"
 
 # 1. (Optional) completely restart the app. This ALSO kills the bridge.
-$A shell "am force-stop com.mabu.facetrack"; sleep 2
-$A shell "am start -n com.mabu.facetrack/.MainActivity"
+$A shell "am force-stop com.mabu.facetrackadb"; sleep 2
+$A shell "am start -n com.mabu.facetrackadb/.MainActivity"
 
 # 2. Pause the app so it can't contend for the bridge slot.
-$A shell "am broadcast -a com.mabu.facetrack.PAUSE_TRACKING --ez paused true -p com.mabu.facetrack"
+$A shell "am broadcast -a com.mabu.facetrackadb.PAUSE_TRACKING --ez paused true -p com.mabu.facetrackadb"
 
 # 3. Kill any stray bridge/nc, then start exactly ONE bridge.
 $A shell 'for p in /proc/[0-9]*; do c=$(cat $p/cmdline 2>/dev/null | tr "\0" " ");
@@ -525,16 +528,22 @@ tracking upward at EUD≈25–40, face returns to center, eye starts returning t
 
 #### Fix applied
 
-**`EUD_MAX_RATE = 1.0` logical unit per face-detection callback** in `facetrackadb/MainActivity.kt`:
+**`EUD_MAX_RATE = 1.0` logical unit per callback, asymmetric** in `facetrackadb/MainActivity.kt`:
 
 ```kotlin
-private val EUD_MAX_RATE = 1.0  // max EUD change per 70ms tick
+private val EUD_MAX_RATE = 1.0  // max EUD change per tick on RETURN to center only (prevents PID overshoot)
 // ...
-posEUD += deadbandSmooth(posEUD, targetEUD).coerceIn(-EUD_MAX_RATE, EUD_MAX_RATE)
+val deltaEUD = deadbandSmooth(posEUD, targetEUD)
+posEUD += if (deltaEUD > 0) deltaEUD.coerceAtMost(EUD_MAX_RATE) else deltaEUD
 ```
 
-This caps both directions of EUD movement to 1 logical unit per callback (~14 units/second at
-70ms send interval). At this rate the motor board's PID does not overshoot significantly.
+`deltaEUD > 0` means EUD is rising (returning toward center from a low position) — the direction
+that excites the PID overshoot. Only that direction is capped. Downward tracking (EUD falling,
+face moving upward) runs free so the eyes follow without sluggishness.
+
+The original symmetric `coerceIn(-EUD_MAX_RATE, EUD_MAX_RATE)` was deployed in session 13 and
+later made asymmetric in session 15 (2026-06-03). At this rate the motor board's PID does not
+overshoot significantly in either direction.
 
 **Result after fix (live telemetry, 45s session):**
 - EUD bursts: 2 (down from 9), ptp 11–25 wire (down from 80–100). Peak reversals = 3.
@@ -581,12 +590,8 @@ looking down (max neckFrac ≈ 12.5%); at 0.05 the neck reaches ~26% of range at
 effort, which is visibly effective.
 
 **Remaining open items:**
-1. **Asymmetric EUD rate cap** — the root fix for residual oscillation. Uncap downward tracking
-   (face moving up → EUD falls freely), rate-cap only the return toward center (EUD rising toward 50).
-   Current symmetric cap of 1.0/tick slows both directions equally; upward return is what excites
-   the PID, not the downward approach.
-2. **Tracking smoothness** — overall tracking is functional but needs smoother motion. SMOOTH=0.12
-   and DEADBAND=1.5 are the current values; likely candidates for tuning next session.
+1. ~~Asymmetric EUD rate cap~~ — **RESOLVED 2026-06-03 (session 15).** Deployed. See updated fix block above.
+2. ~~Tracking smoothness~~ — **RESOLVED 2026-06-03 (session 15).** `SMOOTH` raised from 0.12 → 0.30; `SEND_INTERVAL_MS` lowered from 70 → 50ms. See Section 14.
 3. ELR, NR, NE oscillation testing under rapid reversal — not yet done.
 
 ---
@@ -642,3 +647,52 @@ adb shell "exec 3<>/dev/ttyS1; busybox stty -F /dev/ttyS1 57600 raw -hupcl; busy
   programmatic oscillation signal with no camera needed — captured live during the EUD=0 bug
   (the EUD byte cycled ~`7c 78 7b 7a …` around center). This is the basis for future
   closed-loop tuning.
+
+---
+
+## 14. Face Tracking Parameters (facetrackadb)
+
+Reference for all tunable constants in `facetrackadb/MainActivity.kt`. These are the deployed
+values as of 2026-06-03 (session 15), confirmed working on this unit.
+
+### Motion smoothing
+
+| Constant | Value | Effect |
+|----------|-------|--------|
+| `SMOOTH` | `0.30` | Fraction of remaining error applied each tick. Higher = faster/snappier, lower = slower/smoother. Range 0.0–1.0. |
+| `DEADBAND` | `1.5` | Motor-unit threshold below which corrections are ignored (suppresses face-detection jitter). |
+| `SEND_INTERVAL_MS` | `50` | Minimum ms between motor writes. Caps motor update rate at ~20 Hz. |
+| `EUD_MAX_RATE` | `1.0` | Max EUD change per tick **on return to center only** (asymmetric cap). Prevents PID overshoot. Downward tracking is uncapped. |
+
+**Tuning SMOOTH:** The face detector runs at ~10 Hz on this hardware. With `SMOOTH=0.30` and
+`SEND_INTERVAL_MS=50ms`, a 15-unit error closes to within deadband in ~5 ticks (~250ms) —
+noticeably responsive without being jerky. Previous value of 0.12 took ~18 ticks (~1.3s) to
+settle, causing visible tracking lag.
+
+### Eye/neck soft limits
+
+| Constant | Value | Notes |
+|----------|-------|-------|
+| `EYE_LR_MIN` / `EYE_LR_MAX` | `15` / `85` | Horizontal eye range during tracking |
+| `EYE_UD_MIN` / `EYE_UD_MAX` | `5` / `85` | Vertical eye range. 5 is near the physical stop (wire≈13); rate cap prevents overshoot. |
+| `NECK_MIN` / `NECK_MAX` | `20` / `80` | NR tracking range |
+| `NE_MIN` / `NE_MAX` | `18` / `100` | NE tracking range |
+
+### Eye/neck coordination thresholds
+
+| Constant | Value | Axis | Notes |
+|----------|-------|------|-------|
+| `EYE_NECK_TRIGGER` | `0.60` | LR | Eye at 60% effort → neck ramps in |
+| `UD_NECK_TRIGGER` | `0.05` | UD | Lower trigger needed: Y_OFFSET=-0.70 caps downward effort at ≈0.30, so 0.60 is unreachable looking down |
+| `NECK_FULL_UNLOCK` | `0.80` | both | Neck at 80% → eye uses full range |
+| `EYE_FULL_UNLOCK` | `0.90` | both | Eye at 90% → both axes unlock |
+
+### Camera / input
+
+| Constant | Value | Notes |
+|----------|-------|-------|
+| `Y_OFFSET` | `-0.70` | Shifts tracking center up. Compensates camera mounting angle + pixel center offset. |
+| `X_OFFSET` | `0.0` | No horizontal compensation needed on this unit. |
+| `ELR_GAIN` | `1.4` | Scales xNorm (max ≈ ±0.7 in practice) to fill ±1.0 effort range. |
+| Camera resolution | `320×240` | Smallest available — keeps ML Kit latency low on Mabu's CPU. |
+| ML Kit mode | `PERFORMANCE_MODE_FAST` | No landmarks, no classification, minFaceSize=0.15. |
