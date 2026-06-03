@@ -22,5 +22,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "MabuFaceTrack"
+rootProject.name = "MabuFaceTrackADB"
 include(":app")

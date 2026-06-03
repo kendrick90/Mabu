@@ -3,8 +3,6 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.CAMERA" />
-    <!-- TEMP: needed for TCP motor bridge workaround; remove if direct serial access is restored -->
-    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:allowBackup="true"

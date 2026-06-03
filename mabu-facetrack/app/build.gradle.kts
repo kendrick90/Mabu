@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace = "com.mabu.facetrack"
+    namespace = "com.mabu.facetrackadb"
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
@@ -11,13 +11,27 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.mabu.facetrack"
+        applicationId = "com.mabu.facetrackadb"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 28
         versionCode = 1
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters += listOf("armeabi-v7a")
+        }
+        externalNativeBuild {
+            cmake { cFlags("-O2") }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {
