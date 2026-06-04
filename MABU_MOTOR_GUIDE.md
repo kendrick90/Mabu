@@ -4,23 +4,28 @@
 > Covers the motor protocol, wire encoding, per-motor limits and neutrals, movement directions,
 > serial access, and known gotchas. Mistakes here cause silent failures or grinding.
 
-## Current State (as of 2026-06-03, session 19)
+## Current State (as of 2026-06-04, post-rattle refactor)
 
 **Motor control: WORKING via native JNI, no bridge required.**
 
 - App: `facetrackadb` (`com.mabu.facetrackadb`) at `X:\Claude\Mabu\facetrackadb\`
 - `facetrackadb` is the **sole home launcher** — auto-starts on every boot.
 - Serial access: native C `open("/dev/ttyS1")` via JNI. No SELinux denial, no bridge.
-- **Bounds filter + tracking-ID hysteresis** (session 17) — `|xNorm|>1.0` or `|yNorm|>1.0` faces rejected; new IDs must persist 4 consecutive frames before accepted.
-- **Asymmetric EUD rate cap** (session 13) — `EUD_MAX_RATE=1.0` on return to center only. See Section 12.
-- **NE rate cap** (session 18) — `NE_MAX_RATE=1.0` on return to neutral only, mirroring EUD.
-- **ID-transition slew window** (session 18) — when a new tracking ID is confirmed, all 4 motors are clamped to ±2.0 units/tick for 10 ticks (~500ms) to absorb the input jump.
-- **IoU cross-frame tracker** (session 19) — maintains bbox + velocity estimate independent of ML Kit IDs. When ML Kit reassigns an ID to the same physical face, IoU with the predicted position is high → accepted immediately with no hysteresis wait and no slew window. Only a genuinely new face (IoU < 0.30) triggers hysteresis + slew. See Section 14.
-- **FACE_LOSS_GRACE_MS = 1000ms** (session 19, raised from 750ms) — longer window for the IoU tracker to match a face that was briefly lost and reappears with a new ML Kit ID.
-- **Camera moved to dedicated `mabu-camera-vision` HandlerThread** (session 18) at `THREAD_PRIORITY_BACKGROUND - 5` (nice +5). Mirrors Kendrick's pattern in `mabu-anima` — keeps all 4 cores available but lets future audio (URGENT_AUDIO = -19) preempt the ~35ms face inference.
-- **4 callback buffers** (was 2) — reduces backpressure drops to ~1/50 frames.
-- **Debug overlay rate-limited to 4Hz** — main-thread TextView re-layout per frame was preempting the camera thread; this killed the ≥120ms inference outlier tail.
-- **Three-tier perf instrumentation** in place — HAL arrival cadence, ML Kit inference time + histogram, end-to-end pipeline interval. Logged every 50 frames (~5s). See Section 15.
+- **Decoupled tween architecture** (2026-06-04) — detection thread (10 Hz) writes targets only; a dedicated 25 Hz `mabu-tween` HandlerThread LP-filters position toward targets and owns ALL motor I/O. Kendrick-pattern, see Section 14.
+- **`SEND_DEADBAND` in MabuMotors (0.5 motor units)** — `moveAll` skips the wire frame if no motor has changed by ≥ one wire step from what was last sent. This is the load-bearing fix for servo rattle: a steady on-target motor produces zero serial traffic.
+- **Fixation deadzone (`TARGET_DEADZONE = 0.5`)** — `updateTargets` only commits a new target if it differs from the current target by more than 0.5 motor units. Eye literally locks while the face wobbles within the band.
+- **Persistent input EMA across face drops (`TARGET_SMOOTH = 0.4`)** — `smoothedXNorm/YNorm` are NOT reset on grace expiry or new-face confirm; re-seeding caused the eye to snap to ML Kit's first re-acquire frame which was often a hallucinated edge-clipped position. Keeping state means the first new sample blends 40/60 with the pre-drop position.
+- **In-frame face selection** — when ML Kit returns multiple faces (common on fresh boot during autoexposure settle), prefer the confirmed-ID face, then the face with highest IoU vs predicted bbox, then the largest face WHOSE CENTER IS INSIDE THE IMAGE, then last-resort largest-overall. Old "biggest area" heuristic locked onto phantoms whose bbox extended off-screen.
+- **Zero-overlap IoU rejection** — when the tracker is alive but the new bbox shares ZERO pixels with the predicted position, reject the detection entirely. It's almost certainly a different physical face or a phantom; eye holds, no target update, no tracker poisoning.
+- **IoU cross-frame tracker** (session 19) — maintains bbox + velocity estimate independent of ML Kit IDs. When ML Kit reassigns an ID to the same physical face, IoU with the predicted position is high → accepted immediately with no hysteresis. See Section 14.
+- **FACE_LOSS_GRACE_MS = 1000 ms** — within grace, targets hold; past grace, the tween pulls targets toward neutrals via `RETURN_ALPHA = 0.05` for a gentle drift.
+- **Camera on dedicated `mabu-camera-vision` HandlerThread** (session 18) at `THREAD_PRIORITY_BACKGROUND - 5` (nice +5).
+- **4 callback buffers** — reduces backpressure drops to ~1/50 frames.
+- **Debug overlay rate-limited to 4 Hz** — main-thread TextView re-layout per frame was preempting the camera thread.
+- **Three-tier perf instrumentation** — HAL arrival cadence, ML Kit inference time + histogram, end-to-end pipeline interval. Logged every 50 frames. See Section 15.
+
+**Removed 2026-06-04** (now replaced by the decoupled tween + send-deadband, do not re-introduce):
+slew window (`ID_TRANSITION_FRAMES`/`MAX_RATE`), EUD/NE asymmetric rate caps, `SMOOTH`/`DEADBAND`/`SEND_INTERVAL_MS`, the inline `motors.moveAll` in the empty-faces grace path, and `deadbandSmooth()`. See Section 14 for rationale.
 
 ---
 
@@ -654,65 +659,119 @@ adb shell "exec 3<>/dev/ttyS1; busybox stty -F /dev/ttyS1 57600 raw -hupcl; busy
 
 ## 14. Face Tracking Parameters (facetrackadb)
 
-Reference for all tunable constants in `facetrackadb/MainActivity.kt`. These are the deployed
-values as of 2026-06-03 (session 15), confirmed working on this unit.
+Reference for all tunable constants in `facetrackadb/MainActivity.kt` and
+`facetrackadb/MabuMotors.kt`. These are the deployed values as of 2026-06-04,
+confirmed working on this unit.
 
-### Motion smoothing
+### Architecture: decoupled tween (Kendrick-pattern, 2026-06-04)
+
+The face detector and the motor I/O run on **separate threads at different
+rates**. Detection on `motorExecutor` (~10 Hz, camera-bound); motor frames on a
+dedicated `mabu-tween` HandlerThread at 25 Hz. The detector NEVER touches the
+serial port — it only writes `targetELR/EUD/NR/NE` (volatile fields). The tween
+LP-filters `posELR/EUD/NR/NE` toward those targets at every tick and calls
+`motors.moveAll`, which has its own send-side deadband so a steady-on-target
+motor produces zero serial traffic.
+
+This is the architectural pattern from Kendrick's `mabu-android` app
+(`gazeTickRunnable`); we adopted it after diagnosing the 2026-06-04 servo rattle.
+Before the refactor, the detection callback drove motor I/O directly, sending a
+fresh 7-motor frame every ~10 Hz with small wire-byte jitter — the servos
+audibly tracked each micro-update. After the refactor, motor frames go on the
+wire only when the LP-filtered position actually crosses a wire-step threshold.
+
+The advantage isn't smoothness alone — it's that the **motor I/O cadence is
+decoupled from the noisy detection cadence**. ML Kit's bbox can wobble
+frame-to-frame without producing matching wobble on the wire.
+
+### Motion smoothing (current values)
 
 | Constant | Value | Effect |
 |----------|-------|--------|
-| `SMOOTH` | `0.30` | Fraction of remaining error applied each tick. Higher = faster/snappier, lower = slower/smoother. Range 0.0–1.0. |
-| `DEADBAND` | `1.5` | Motor-unit threshold below which corrections are ignored (suppresses face-detection jitter). |
-| `SEND_INTERVAL_MS` | `50` | Minimum ms between motor writes. Caps motor update rate at ~20 Hz. |
-| `EUD_MAX_RATE` | `1.0` | Max EUD change per tick **on return to center only** (asymmetric cap). Prevents PID overshoot. Downward tracking is uncapped. |
-| `NE_MAX_RATE` | `1.0` | Max NE change per tick **on return to neutral only** (delta < 0). Mirrors EUD treatment after session 18 telemetry showed NE reversal rate at 16% (vs NR at 8%). |
-| `ID_TRANSITION_FRAMES` / `ID_TRANSITION_MAX_RATE` | `10` / `2.0` | After a **genuinely new** face is confirmed (IoU miss), all 4 motors are slew-capped at ±2.0/tick for 10 ticks (~500ms). IoU-matched ID changes do NOT fire this — the face didn't actually jump. |
-| `TRACKING_CONFIRM_FRAMES` | `4` | Hysteresis: a new ID must persist for 4 consecutive frames before being accepted (~400ms at 10fps). Only applies when IoU check also fails (IoU < 0.30). |
-| `FACE_LOSS_GRACE_MS` | `1000` | Ms of no detection before return-to-neutral begins. Raised from 750ms in session 19 — longer window gives the IoU tracker more opportunity to match a briefly-lost face on re-detection rather than resetting to null and running full hysteresis. |
-| `OVERLAY_INTERVAL_MS` | `250` | Debug overlay text update rate-limit (4 Hz). Per-frame TextView updates triggered main-thread re-layout work that preempted the camera thread; rate-limiting eliminated the worst inference outliers (≥120ms bucket dropped to 0). |
-| `TRACKER_IOU_THRESHOLD` | `0.30` | IoU cross-frame tracker match threshold. Detections with IoU ≥ 0.30 against the velocity-predicted bbox are treated as the same physical face regardless of ML Kit's tracking ID. |
-| `TRACKER_VEL_SMOOTH` | `0.3` | EMA weight for the per-frame velocity estimate used in the IoU prediction. |
+| `TICK_INTERVAL_MS` | `40L` | Tween period (25 Hz). |
+| `EYES_ALPHA` | `0.30` | Per-tick LP coefficient for eye motors. `posELR += (targetELR − posELR) * α`. At 25 Hz this gives a ~80 ms time constant to reach 63% of any new target. |
+| `NECK_ALPHA` | `0.12` | Per-tick LP coefficient for neck motors. Slower than eyes so neck visibly follows eye movement rather than racing it. |
+| `RETURN_ALPHA` | `0.05` | When face lost > `FACE_LOSS_GRACE_MS`, the tween pulls targets toward neutrals at this rate per tick (~125 ms time constant). Gentle drift back to center, never snapping. |
+| `TARGET_SMOOTH` | `0.4` | Input EMA on `xNorm`/`yNorm` from the face bbox center, applied in the detection callback before computing targets. Damps ML Kit's frame-to-frame bbox jitter. A single-frame outlier contributes only 40 %. Persistent across face drops (deliberately NOT re-seeded on grace expiry or new-face confirm — re-seeding caused the eye to snap to whatever ML Kit hallucinated on the first re-acquire frame). |
+| `TARGET_DEADZONE` | `0.5` | Fixation deadzone in motor units. `updateTargets` only commits a new target if it differs from the current target by more than this (~1.3 wire steps). While the face wobbles within the band, target doesn't move, `pos` converges to it, MabuMotors stops sending frames — the eye truly locks. Crossing the deadzone is a real gaze shift. |
+| `SEND_DEADBAND` (MabuMotors) | `0.5` | Output-side deadband in motor units. `motors.moveAll` skips the wire frame if EVERY motor is within `SEND_DEADBAND` of what was last sent (NaN initial state forces the first frame). One wire step is `1/2.55 ≈ 0.39`, so 0.5 means "at least one full wire-step change". This is the load-bearing fix for servo rattle. |
+| `FACE_LOSS_GRACE_MS` | `1000L` | After this much time with no face, the tween starts pulling targets toward neutrals via `RETURN_ALPHA`. Within grace, targets just hold. Also clears the IoU tracker reference. |
+| `TRACKING_CONFIRM_FRAMES` | `4` | Hysteresis: a new face ID must persist 4 consecutive frames before being accepted as the tracked face. Only used when there's NO tracker reference (post-grace) AND IoU < threshold. |
+| `OVERLAY_INTERVAL_MS` | `250L` | Debug overlay rate-limit (4 Hz). Per-frame TextView updates preempted the camera thread; rate-limiting eliminated the ≥120 ms inference outliers entirely. **Always keep this.** |
+| `TRACKER_IOU_THRESHOLD` | `0.30f` | IoU cross-frame tracker match threshold. Detections with IoU ≥ 0.30 against the velocity-predicted bbox are treated as the same physical face regardless of ML Kit's tracking ID. |
+| `TRACKER_VEL_SMOOTH` | `0.3f` | EMA weight for the per-frame velocity estimate used in the IoU prediction. |
+| `EDGE_FREEZE_FRAMES` | `3` | When the face center has been clipped past the frame edge for this many consecutive frames, the corresponding eye target stops being pushed further toward the end-stop. |
 
-### IoU cross-frame tracker (session 19)
+**Removed in 2026-06-04 refactor** (do not re-introduce without rationale): `SMOOTH`,
+`DEADBAND`, `SEND_INTERVAL_MS`, `EUD_MAX_RATE`, `NE_MAX_RATE`,
+`ID_TRANSITION_FRAMES`/`ID_TRANSITION_MAX_RATE`, the inline motor send in the
+empty-faces grace path, and the `deadbandSmooth()` function. The LP tween +
+SEND_DEADBAND replace all of these cleanly.
 
-ML Kit's `enableTracking()` maintains face IDs across frames but reassigns them every ~3–5s due to
-detection gaps, blinks, or partial occlusion. Each reassignment previously triggered 4-frame
-hysteresis (~400ms motor freeze) plus the 500ms slew window — visible as a jolt.
+### IoU cross-frame tracker
 
-The IoU tracker maintains its own `trackerBbox` (normalized [0,1] bbox of the last accepted face)
-plus an EMA velocity estimate (`trackerVelX`, `trackerVelY`). On each detection:
+ML Kit's `enableTracking()` reassigns face IDs every few seconds due to
+detection gaps, blinks, partial occlusion, or multi-face frames. The IoU
+tracker maintains its own `trackerBbox` (normalized [0,1]) plus a velocity EMA
+so we recognize the same physical face across ID changes without restarting
+hysteresis / smoothing each time. On each detection:
 
-1. Predict bbox position: shift `trackerBbox` by the current velocity estimate.
-2. Compute IoU between the predicted bbox and the new detection.
-3. If IoU ≥ 0.30 → same physical face. Accept immediately, update `confirmedTrackingId` to the
-   new ML Kit ID, skip hysteresis and slew window entirely.
-4. If IoU < 0.30 → genuinely new face. Run 4-frame hysteresis as before; on confirm, fire slew
-   window and reset velocity.
+1. Predict bbox: shift `trackerBbox` by `(trackerVelX, trackerVelY)`.
+2. Compute IoU between predicted bbox and new detection.
+3. If IoU ≥ `TRACKER_IOU_THRESHOLD` (0.30) → same physical face, accept the new
+   ID as a continuation.
+4. If IoU > 0 but < 0.30 → ambiguous; accept as continuation, but wipe velocity
+   so the next prediction starts fresh.
+5. **If IoU == 0 AND tracker is alive → reject the detection entirely.** No
+   pixel overlap with the predicted bbox means it's a different physical face
+   (or a phantom). Return without updating `confirmedTrackingId`, `trackerBbox`,
+   `smoothedXNorm`, or any target. Eye holds its current position. If the user
+   genuinely jumped to a far position, subsequent frames will keep reporting it
+   and grace + hysteresis will pick it up as a fresh face.
+6. If IoU < threshold AND tracker is null (post-grace, no reference) → genuine
+   new face; run hysteresis.
 
-**Session 19 telemetry results (110s run vs session 18 baseline):**
+### Face selection priority (when ML Kit returns multiple faces)
 
-| Motor | Session 18 baseline | Session 19 (all fixes + IoU) |
-|-------|--------------------|-----------------------------|
-| ELR   | ~12% reversal      | **5.2%** (−57%)             |
-| EUD   | ~9%                | **5.4%** (−40%)             |
-| NR    | ~8%                | **2.0%** (−75%)             |
-| NE    | ~16%               | **5.1%** (−68%)             |
+ML Kit returns multiple faces on fresh boot while autoexposure settles, or when
+a phantom detection appears at the frame edge. The old "biggest area" heuristic
+locked onto phantoms whose bbox extended off-screen (raw area includes
+off-image pixels). Current order:
 
-19 IoU matches observed in a 111s run (session 19b) — each is a seamless ID transition that
-would previously have been a 400ms freeze + 500ms slew. All genuine new-face events showed
-IoU=0.00, confirming the threshold produces no false positives in normal use.
+1. The face whose `trackingId` equals `confirmedTrackingId` — fastest path.
+2. If the tracker is alive, the face with the **highest IoU against the
+   tracker's predicted bbox**, drawn from in-frame candidates if any.
+3. The largest face **whose center is inside the image** (filters phantoms with
+   off-screen centers).
+4. Last-resort fallback to the largest face overall.
 
-**Tuning SMOOTH:** The face detector runs at ~10 Hz on this hardware. With `SMOOTH=0.30` and
-`SEND_INTERVAL_MS=50ms`, a 15-unit error closes to within deadband in ~5 ticks (~250ms) —
-noticeably responsive without being jerky. Previous value of 0.12 took ~18 ticks (~1.3s) to
-settle, causing visible tracking lag.
+### Edge-clip handling
 
-**Face-loss behavior:** When no face is detected, the app holds the last commanded position for
-`FACE_LOSS_GRACE_MS` (750ms). After that, on each detection tick it applies `deadbandSmooth`
-toward all neutrals (ELR/NR → 50, EUD → 50, NE → NE_NEUTRAL) using the same SMOOTH rate, with
-the EUD asymmetric cap applied on the upward return. This prevents the head from holding an
-extreme position during detection gaps, which was causing PID overshoot oscillation when tracking
-resumed. `lastFaceMs` is updated on every successful detection; the grace clock resets immediately.
+When the face center reports outside `[-1, 1]` (face partly off-frame), the
+detector clamps `xNorm`/`yNorm` to ±1.0 instead of skipping. Skipping froze
+motors AND let trackerBbox go stale, refiring the slew window on every reentry
+(historical — slew window no longer exists, but the staleness problem would
+have re-emerged).
+
+Two edge-clip frame counters (`xClipFrames`, `yClipFrames`) increment on each
+clipped frame. Once they cross `EDGE_FREEZE_FRAMES` (3), the eye target stops
+being pushed further toward the mechanical end-stop in the clipped direction.
+
+### Face-loss behavior
+
+Within `FACE_LOSS_GRACE_MS` (1 s) of the last good detection, targets simply
+hold. The tween still runs and continues LP-filtering `pos` toward `target` —
+but with `target` unchanged, `pos` converges to it and `SEND_DEADBAND` stops
+the wire frames. The motor goes silent.
+
+Past grace, the tween pulls each target toward its neutral via `RETURN_ALPHA`
+(0.05 / tick). At 25 Hz that's a ~500 ms time constant to drift halfway back —
+gentle, never snapping.
+
+When detection resumes after a long absence, `smoothedXNorm`/`smoothedYNorm`
+are NOT reset. The first new sample EMA-blends 40 / 60 with the pre-drop
+position, naturally resisting wild outliers from re-acquire frames. This was
+the key fix for the "freaking out on re-acquire" pathology.
 
 ### Eye/neck soft limits
 
