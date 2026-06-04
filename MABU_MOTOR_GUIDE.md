@@ -4,7 +4,17 @@
 > Covers the motor protocol, wire encoding, per-motor limits and neutrals, movement directions,
 > serial access, and known gotchas. Mistakes here cause silent failures or grinding.
 
-## Current State (as of 2026-06-04, post-rattle refactor)
+## Current State (as of 2026-06-04, end-of-session tuning pass)
+
+**Known remaining issue:** faint EUD rattle persists when the face is hovering at the
+bottom edge of the frame. Send rate is down to roughly 0–5 sends/sec at the edge
+(see diagnostic in `MabuMotors.moveAll`); the residual is the unavoidable cost of
+the tween still emitting periodic 1–3 wire-step updates as the face position
+drifts inside the deadzone band. Further reduction would require either bigger
+deadzones (visible step-jumps) or a heartbeat-style send strategy that holds the
+servo command stable for fixed intervals. Left for the next session.
+
+
 
 **Motor control: WORKING via native JNI, no bridge required.**
 
@@ -12,8 +22,8 @@
 - `facetrackadb` is the **sole home launcher** — auto-starts on every boot.
 - Serial access: native C `open("/dev/ttyS1")` via JNI. No SELinux denial, no bridge.
 - **Decoupled tween architecture** (2026-06-04) — detection thread (10 Hz) writes targets only; a dedicated 25 Hz `mabu-tween` HandlerThread LP-filters position toward targets and owns ALL motor I/O. Kendrick-pattern, see Section 14.
-- **`SEND_DEADBAND` in MabuMotors (0.5 motor units)** — `moveAll` skips the wire frame if no motor has changed by ≥ one wire step from what was last sent. This is the load-bearing fix for servo rattle: a steady on-target motor produces zero serial traffic.
-- **Fixation deadzone (`TARGET_DEADZONE = 0.5`)** — `updateTargets` only commits a new target if it differs from the current target by more than 0.5 motor units. Eye literally locks while the face wobbles within the band.
+- **`SEND_DEADBAND` in MabuMotors (1.0 motor units)** — `moveAll` skips the wire frame if no motor has changed by ≥ ~2.5 wire steps from what was last sent. Load-bearing fix for servo rattle: collapses each LP-tween convergence into one or two wire frames rather than a stream of micro-updates.
+- **Per-axis fixation deadzones (`TARGET_DEADZONE = 0.5` horizontal, `TARGET_DEADZONE_UD = 2.5` vertical)** — `updateTargets` only commits a new target if it differs from the current target by more than the threshold for that axis. Wider UD band absorbs the heavier bbox jitter at the top/bottom edges of the frame.
 - **Persistent input EMA across face drops (`TARGET_SMOOTH = 0.4`)** — `smoothedXNorm/YNorm` are NOT reset on grace expiry or new-face confirm; re-seeding caused the eye to snap to ML Kit's first re-acquire frame which was often a hallucinated edge-clipped position. Keeping state means the first new sample blends 40/60 with the pre-drop position.
 - **In-frame face selection** — when ML Kit returns multiple faces (common on fresh boot during autoexposure settle), prefer the confirmed-ID face, then the face with highest IoU vs predicted bbox, then the largest face WHOSE CENTER IS INSIDE THE IMAGE, then last-resort largest-overall. Old "biggest area" heuristic locked onto phantoms whose bbox extended off-screen.
 - **Zero-overlap IoU rejection** — when the tracker is alive but the new bbox shares ZERO pixels with the predicted position, reject the detection entirely. It's almost certainly a different physical face or a phantom; eye holds, no target update, no tracker poisoning.
@@ -693,14 +703,16 @@ frame-to-frame without producing matching wobble on the wire.
 | `NECK_ALPHA` | `0.12` | Per-tick LP coefficient for neck motors. Slower than eyes so neck visibly follows eye movement rather than racing it. |
 | `RETURN_ALPHA` | `0.05` | When face lost > `FACE_LOSS_GRACE_MS`, the tween pulls targets toward neutrals at this rate per tick (~125 ms time constant). Gentle drift back to center, never snapping. |
 | `TARGET_SMOOTH` | `0.4` | Input EMA on `xNorm`/`yNorm` from the face bbox center, applied in the detection callback before computing targets. Damps ML Kit's frame-to-frame bbox jitter. A single-frame outlier contributes only 40 %. Persistent across face drops (deliberately NOT re-seeded on grace expiry or new-face confirm — re-seeding caused the eye to snap to whatever ML Kit hallucinated on the first re-acquire frame). |
-| `TARGET_DEADZONE` | `0.5` | Fixation deadzone in motor units. `updateTargets` only commits a new target if it differs from the current target by more than this (~1.3 wire steps). While the face wobbles within the band, target doesn't move, `pos` converges to it, MabuMotors stops sending frames — the eye truly locks. Crossing the deadzone is a real gaze shift. |
-| `SEND_DEADBAND` (MabuMotors) | `0.5` | Output-side deadband in motor units. `motors.moveAll` skips the wire frame if EVERY motor is within `SEND_DEADBAND` of what was last sent (NaN initial state forces the first frame). One wire step is `1/2.55 ≈ 0.39`, so 0.5 means "at least one full wire-step change". This is the load-bearing fix for servo rattle. |
+| `TARGET_DEADZONE` | `0.5` | Fixation deadzone for **ELR / NR** in motor units. `updateTargets` only commits a new target if it differs from the current target by more than this (~1.3 wire steps). Eye locks when face wobbles within the band. |
+| `TARGET_DEADZONE_UD` | `2.5` | Fixation deadzone for **EUD / NE** (vertical axis) in motor units. Wider than the horizontal band because the bottom edge of the frame produces ~2 unit `tEUD` swings per detection as `yNorm` flickers across ±1.0 — the smaller LR band can't absorb that. ~6.4 wire steps; only real downward gaze shifts cross it. |
+| `SEND_DEADBAND` (MabuMotors) | `1.0` | Output-side deadband in motor units. `motors.moveAll` skips the wire frame if EVERY motor is within `SEND_DEADBAND` of what was last sent. ~2.5 wire steps. Critical for servo rattle — the LP tween emits a series of small-but-deadband-crossing updates during each convergence, and a larger send-deadband collapses those into one or two frames per target update. Started at 0.5, raised to 1.0 on 2026-06-04 to silence persistent edge-condition EUD chatter. |
 | `FACE_LOSS_GRACE_MS` | `1000L` | After this much time with no face, the tween starts pulling targets toward neutrals via `RETURN_ALPHA`. Within grace, targets just hold. Also clears the IoU tracker reference. |
 | `TRACKING_CONFIRM_FRAMES` | `4` | Hysteresis: a new face ID must persist 4 consecutive frames before being accepted as the tracked face. Only used when there's NO tracker reference (post-grace) AND IoU < threshold. |
 | `OVERLAY_INTERVAL_MS` | `250L` | Debug overlay rate-limit (4 Hz). Per-frame TextView updates preempted the camera thread; rate-limiting eliminated the ≥120 ms inference outliers entirely. **Always keep this.** |
 | `TRACKER_IOU_THRESHOLD` | `0.30f` | IoU cross-frame tracker match threshold. Detections with IoU ≥ 0.30 against the velocity-predicted bbox are treated as the same physical face regardless of ML Kit's tracking ID. |
 | `TRACKER_VEL_SMOOTH` | `0.3f` | EMA weight for the per-frame velocity estimate used in the IoU prediction. |
-| `EDGE_FREEZE_FRAMES` | `3` | When the face center has been clipped past the frame edge for this many consecutive frames, the corresponding eye target stops being pushed further toward the end-stop. |
+| `EDGE_FREEZE_FRAMES` | `1` | When the face center has been clipped past the frame edge for this many consecutive frames, the corresponding eye target stops being pushed further toward the end-stop. Lowered from 3 to 1 on 2026-06-04: at 3 the freeze never engaged when `yNorm` was flickering above/below 1.0 because `yClipFrames` kept resetting on the in-frame frames. |
+| `UD_NECK_TRIGGER` | `0.15` | Neck-engagement threshold for the UD axis. Below this `|ay|`, neck stays at neutral while eyes do the work. Raised from 0.05 on 2026-06-04 to keep the NE motor silent for shallow downward gaze (was being driven on every frame because `Y_OFFSET=-0.70` made `ay > 0.05` almost always true when the user was below frame-center). |
 
 **Removed in 2026-06-04 refactor** (do not re-introduce without rationale): `SMOOTH`,
 `DEADBAND`, `SEND_INTERVAL_MS`, `EUD_MAX_RATE`, `NE_MAX_RATE`,
@@ -754,7 +766,7 @@ motors AND let trackerBbox go stale, refiring the slew window on every reentry
 have re-emerged).
 
 Two edge-clip frame counters (`xClipFrames`, `yClipFrames`) increment on each
-clipped frame. Once they cross `EDGE_FREEZE_FRAMES` (3), the eye target stops
+clipped frame. Once they cross `EDGE_FREEZE_FRAMES` (1), the eye target stops
 being pushed further toward the mechanical end-stop in the clipped direction.
 
 ### Face-loss behavior
@@ -787,7 +799,7 @@ the key fix for the "freaking out on re-acquire" pathology.
 | Constant | Value | Axis | Notes |
 |----------|-------|------|-------|
 | `EYE_NECK_TRIGGER` | `0.60` | LR | Eye at 60% effort → neck ramps in |
-| `UD_NECK_TRIGGER` | `0.05` | UD | Lower trigger needed: Y_OFFSET=-0.70 caps downward effort at ≈0.30, so 0.60 is unreachable looking down |
+| `UD_NECK_TRIGGER` | `0.15` | UD | Y_OFFSET=-0.70 caps downward `ay` at ≈0.30 so the LR trigger of 0.60 is unreachable looking down. 0.05 was too sensitive (NE motor was driven on every frame for any below-center face); 0.15 keeps neck silent for shallow downward gaze while still leaving usable range. |
 | `NECK_FULL_UNLOCK` | `0.80` | both | Neck at 80% → eye uses full range |
 | `EYE_FULL_UNLOCK` | `0.90` | both | Eye at 90% → both axes unlock |
 
