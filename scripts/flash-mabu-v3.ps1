@@ -1,37 +1,39 @@
 # flash-mabu-v3.ps1
 #
-# Full liberation procedure with pre-wipe data capture and Magisk root.
+# Liberation procedure with pre-wipe data capture. (Magisk root attempt
+# is preserved as an opt-in for future hardware revisions, but the
+# default skips it -- Magisk v30.7 and v27.0 both produce boot images
+# that hang at "no command" recovery on this RK3288 H7R Mabu boot.img
+# layout. See notes/magisk-incompatibility.md.)
+#
 # See notes/v3-procedure-outline.md for the design rationale.
 #
-# Order of phases:
+# Default phase order (with -TryMagisk OFF, the default):
 #   1. Catch Loader (poll for it; you power-cycle or hit recovery combo)
 #   2. Apply parameter + adbd patches ONLY (no EOCD nukes, no /data wipe)
 #   3. Reboot to Android (Esper kiosk still active but ADB works)
 #   4. Pre-wipe shell-uid capture: /data/app APKs, /sdcard, dumpsys
-#   5. Root via Magisk (manual touch step in the middle)
-#   6. Pre-wipe root-uid capture: /data/data/com.catalia.factorymode + /data/system
-#   7. Reboot to Loader
-#   8. Apply destructive patches: 3x EOCD nukes, init.esper.rc + sdo.sh zeros
-#   9. Wipe /data head 96 MB
-#  10. Reboot to Android
-#  11. User sets up WiFi on touch UI (creds wiped)
-#  12. Install apps (F-Droid + Lawnchair + factorymode + OpenCV Manager)
-#  13. Push animation CSVs + nuance assets + sound.raw
-#  14. Optional: restore calibration from pre-wipe archive
+#   5. Destructive patches: 3x EOCD nukes, init.esper.rc + sdo.sh zeros
+#   6. Wipe /data head 96 MB
+#   7. Reboot to Android
+#   8. User sets up WiFi on touch UI (creds wiped)
+#   9. Install apps (F-Droid + Lawnchair + factorymode + OpenCV Manager)
+#  10. Push animation CSVs + nuance assets + sound.raw
 #
-# This is the WORK-IN-PROGRESS V3 driver. The V2 unified path
-# (flash-mabu.ps1) still works and is the safe default. Use V3 only when
-# you want to preserve per-unit data and gain root.
+# With -TryMagisk: inserts the magisk + capture-root phases between 4 and 5.
+# Don't expect it to work on RK3288 8.1 -- documented as a known failure.
+# Use only if you've prepared the recovery flow (power off + vol-up + plug-in
+# to enter Loader to restore firmware/originals/boot.img).
 #
 # Usage:
-#   .\scripts\flash-mabu-v3.ps1                       # full flow
-#   .\scripts\flash-mabu-v3.ps1 -SkipRoot             # everything except Magisk
+#   .\scripts\flash-mabu-v3.ps1                       # default: no Magisk
+#   .\scripts\flash-mabu-v3.ps1 -TryMagisk            # attempt Magisk root (known to fail on H7R)
 #   .\scripts\flash-mabu-v3.ps1 -SkipCapture          # don't capture pre-wipe
 #   .\scripts\flash-mabu-v3.ps1 -ResumeFrom <phase>   # restart at a phase
 
 [CmdletBinding()]
 param(
-    [switch] $SkipRoot,
+    [switch] $TryMagisk,
     [switch] $SkipCapture,
     [switch] $SkipFinalApps,
     [int]    $WipeMB = 96,
@@ -183,8 +185,12 @@ if (Should-Run 'capture-shell' -and -not $SkipCapture) {
 # =========================================================================
 # PHASE: Magisk root
 # =========================================================================
-if (Should-Run 'magisk' -and -not $SkipRoot) {
-    Phase 'Magisk root'
+if (Should-Run 'magisk' -and $TryMagisk) {
+    Phase 'Magisk root (known to fail on RK3288 H7R)'
+    Warn 'Magisk repacks of this boot.img hang at recovery "no command" --'
+    Warn 'tested with v30.7 and v27.0 (June 2026). See notes/magisk-incompatibility.md.'
+    Warn 'Recovery if device hangs: power off, hold vol-up, plug in --> Loader'
+    Warn 'Then: rkdeveloptool wl 0x20000 firmware/originals/boot.img'
     & (Join-Path $Root 'scripts/magisk-patch-boot.ps1')
     if ($LASTEXITCODE -ne 0) { Warn 'Magisk patch returned non-zero. Decide whether to continue.'; }
 }
@@ -192,7 +198,7 @@ if (Should-Run 'magisk' -and -not $SkipRoot) {
 # =========================================================================
 # PHASE: pre-wipe root-uid capture
 # =========================================================================
-if (Should-Run 'capture-root' -and -not $SkipCapture -and -not $SkipRoot) {
+if (Should-Run 'capture-root' -and -not $SkipCapture -and $TryMagisk) {
     Phase 'Pre-wipe capture (root)'
     & (Join-Path $Root 'scripts/pre-wipe-capture.ps1') -WithRoot
 }
@@ -253,5 +259,5 @@ if (Should-Run 'apps' -and -not $SkipFinalApps) {
 }
 
 Phase 'V3 done'
-Ok 'Unit liberated, captured, and (if Magisk worked) rooted.'
+Ok 'Unit liberated and captured. Root not attempted by default on this hardware (Magisk incompatible).'
 Info 'Next: motor calibration on touch UI, optionally restore from pre-wipe-archive.'
