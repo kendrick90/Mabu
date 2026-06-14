@@ -113,7 +113,8 @@ by /data reformat.
 | 2 | 2022010500480 | clear | clean | works | 10.0.0.147 | ✅ restored | Returning to original owner (friend who lent unit 1). Currently mostly disassembled |
 | 3 | 2022010501476 | clear | clean | works | 10.0.0.252 | ✅ restored | Working in body; antenna seating was finicky during reassembly but final reads were the best of the session (WiFi −62 dBm, LTE RSRP −97 dBm). SIM present |
 | 4 | 2022010501557 | clear | clean | works | 10.0.0.69 | ✅ restored | **Primary unit going forward.** Cleanest of the fleet, fully provisioned via the unified script, deploy-ready |
-| 5 | 2022010501537 | clear | clean | works | TBD | dev-mode | Latest unit, flashed via the polling Loader catch path. OpenCV Manager + factorymode + animations installed |
+| 5 | 2022010501537 | clear | clean | works | 10.0.0.117 | dev-mode | Flashed via the polling Loader catch path. OpenCV Manager + factorymode + animations installed |
+| 6 | 2022010500003 | clear | clean | works | TBD | dev-mode | **First V3 run.** Pre-wipe capture preserved 4 APKs + 17.8 MB /sdcard including new `com.catalia.mabu.softkeyboard.apk` not seen on any prior unit. Magisk root skipped (USB wedged before install) |
 
 ## Caveats / known limits
 
