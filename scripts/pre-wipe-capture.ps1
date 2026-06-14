@@ -23,7 +23,11 @@ param(
     [string] $WifiIp
 )
 
-$ErrorActionPreference = 'Stop'
+# NOTE: do NOT use 'Stop' here -- adb push/pull emit progress on stderr,
+# and PowerShell treats native-command stderr as terminating errors when
+# ErrorActionPreference=Stop. Use 'Continue' and check exit codes ourselves.
+$ErrorActionPreference = 'Continue'
+$ProgressPreference    = 'SilentlyContinue'
 $Root = (Resolve-Path '.').Path
 $ADB = (Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Google.PlatformTools_*\platform-tools\adb.exe" | Select-Object -First 1).FullName
 if (-not $ADB) { throw "adb.exe not found" }
@@ -64,27 +68,46 @@ Ok 'state dumps written'
 
 # ---- APKs from /data/app ---------------------------------------------------
 Section '/data/app APKs (shell uid)'
-# Get path-per-package, then pull each
-$lines = & $ADB -s $D shell "pm list packages -f -3 | sed -e 's/^package://' -e 's/=.*//'" 2>&1
-foreach ($p in $lines) {
-    $p = $p.Trim()
-    if (-not $p) { continue }
-    if ($p -notmatch '^/data/app/.+/base\.apk$') { continue }
-    $pkg = (& $ADB -s $D shell "pm list packages -f | grep $([regex]::Escape($p))").Trim()
-    if ($pkg -match '=([^=]+)$') { $pkgName = $matches[1].Trim() } else { $pkgName = 'unknown' }
+# Parse each line of `pm list packages -f -3`. Format:
+#   package:/data/app/<dir>/base.apk=<package.name>
+$pmOut = & $ADB -s $D shell 'pm list packages -f -3' 2>&1
+foreach ($line in ($pmOut -split "`n")) {
+    $line = $line.Trim()
+    if (-not $line.StartsWith('package:')) { continue }
+    # Format: package:<apkPath>=<packageName>
+    # The apkPath ends in "/base.apk" (or "/split_*.apk"). The package
+    # directory often contains "==" base64 padding, so we can't split on
+    # the first "=". Use the last "=" instead.
+    $body = $line.Substring(8)
+    $lastEq = $body.LastIndexOf('=')
+    if ($lastEq -lt 0) { continue }
+    $apkPath = $body.Substring(0, $lastEq)
+    $pkgName = $body.Substring($lastEq + 1)
+    if ($apkPath -notmatch '\.apk$') { continue }
     $dest = Join-Path "$OutDir/apks" "$pkgName.apk"
-    Info "  pull $pkgName <- $p"
-    & $ADB -s $D pull $p $dest 2>&1 | Out-Null
-    if (Test-Path $dest) { Ok "    $(([math]::Round((Get-Item $dest).Length/1MB,1))) MB" } else { Warn '    pull failed' }
+    Info "  pull $pkgName"
+    & $ADB -s $D pull $apkPath $dest 2>&1 | Out-Null
+    if (Test-Path $dest) {
+        $mb = [math]::Round((Get-Item $dest).Length/1MB,1)
+        Ok "    $mb MB <- $apkPath"
+    } else {
+        Warn '    pull failed'
+    }
 }
 
-# ---- /sdcard tarball -------------------------------------------------------
-Section '/sdcard tarball'
-$null = & $ADB -s $D shell 'tar cf /sdcard/.pre-wipe-sdcard.tar -C / sdcard 2>/dev/null' 2>&1
-& $ADB -s $D pull /sdcard/.pre-wipe-sdcard.tar "$OutDir/sdcard.tar" 2>&1 | Out-Null
-& $ADB -s $D shell 'rm -f /sdcard/.pre-wipe-sdcard.tar' 2>&1 | Out-Null
-if (Test-Path "$OutDir/sdcard.tar") {
-    Ok "$([math]::Round((Get-Item "$OutDir/sdcard.tar").Length/1MB,1)) MB"
+# ---- /sdcard via adb pull -a -----------------------------------------------
+# Use adb's recursive pull rather than tar -- /sdcard is a FUSE mount and
+# tar from / treats /sdcard as just the directory entry (~1 KB output).
+# adb pull -a walks the tree using the shell-uid-readable FUSE view.
+Section '/sdcard (adb pull -a)'
+$sdDest = "$OutDir/sdcard"
+New-Item -ItemType Directory -Force -Path $sdDest | Out-Null
+& $ADB -s $D pull -a /sdcard/ $sdDest 2>&1 | Out-Null
+$sdSize = (Get-ChildItem $sdDest -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+if ($sdSize) {
+    Ok "$([math]::Round($sdSize/1MB,1)) MB of /sdcard content"
+} else {
+    Warn 'no /sdcard content captured'
 }
 
 # ---- Root-only captures ----------------------------------------------------

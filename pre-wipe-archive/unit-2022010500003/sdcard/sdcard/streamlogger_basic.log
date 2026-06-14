@@ -1,0 +1,60 @@
+      191613369 3ddef05e                  API > lh_CreateTimeLogger
+      192220473 3ddef05e                  API < lh_CreateTimeLogger, 0
+      193190994 3ddef05e                  API > lh_CreateAcMod
+      206860172 3ddef05e                  API < lh_CreateAcMod, 0
+      206864037 3ddef05e                AcMod > lh_AcModBorrowInfo
+      206866224 3ddef05e                AcMod < lh_AcModBorrowInfo, 0
+      206868339 3ddef05e                  API > lh_CreateAudioTypeSamples
+      206870162 3ddef05e                  API > CreateAudioType
+      206872860 3ddef05e                  API < CreateAudioType, 0
+      206875047 3ddef05e                  API < lh_CreateAudioTypeSamples, 0
+      206888537 3ddef05e                  API > lh_CreateSingleThreadRec
+      209884537 3ddef05e                  API < lh_CreateSingleThreadRec, 0
+      209888621 3ddef05e            AudioType > lh_ObjClose
+      209891027 3ddef05e            AudioType < lh_ObjClose, 0
+      338480321 3ddef05e                  API > lh_CreateCtx
+      340506821 3ddef05e                  API < lh_CreateCtx, 0
+      340511269 3ddef05e      SingleThreadRec > lh_RecAddCtx
+      340514696 3ddef05e      SingleThreadRec > lh_RecCanAddCtx
+      340517467 3ddef05e      SingleThreadRec < lh_RecCanAddCtx, 0
+      341723436 3ddef05e      SingleThreadRec < lh_RecAddCtx, 0
+      342045655 3ddef05e      SingleThreadRec > lh_ConfigSetParam
+      342056519 3ddef05e      SingleThreadRec < lh_ConfigSetParam, 0
+      342059071 3ddef05e      SingleThreadRec > lh_ConfigSetParam
+      342062790 3ddef05e      SingleThreadRec < lh_ConfigSetParam, 0
+      342065123 3ddef05e      SingleThreadRec > lh_ConfigSetParam
+      342068915 3ddef05e      SingleThreadRec < lh_ConfigSetParam, 0
+      342071030 3ddef05e      SingleThreadRec > lh_ConfigSetParam
+      342074821 3ddef05e      SingleThreadRec < lh_ConfigSetParam, 0
+      342077009 3ddef05e      SingleThreadRec > lh_ConfigSetParam
+      342079998 3ddef05e      SingleThreadRec < lh_ConfigSetParam, 0
+      342082259 3ddef05e      SingleThreadRec > lh_ConfigSetParam
+      342086051 3ddef05e      SingleThreadRec < lh_ConfigSetParam, 0
+      348725697 3ddef05e      SingleThreadRec > lh_SingleThreadRecProcess
+      348933291 76fce5f3                  Ctx Using FST search type 0x73cbb02d
+      349196082 3ddef05e      SingleThreadRec > lh_FxGetSignalLevels
+      349201624 3ddef05e      SingleThreadRec < lh_FxGetSignalLevels, 0
+      478776158 3ddef05e      SingleThreadRec > lh_FxGetSignalLevels
+      479209429 3ddef05e      SingleThreadRec < lh_FxGetSignalLevels, 0
+      508293994 3ddef05e      SingleThreadRec > lh_FxGetSignalLevels
+      508306609 3ddef05e      SingleThreadRec < lh_FxGetSignalLevels, 0
+     3758151875 3ddef05e      SingleThreadRec > lh_FxGetSignalLevels
+     3758163834 3ddef05e      SingleThreadRec < lh_FxGetSignalLevels, 0
+     3786562107 3ddef05e      SingleThreadRec > lh_FxGetSignalLevels
+     3786574066 3ddef05e      SingleThreadRec < lh_FxGetSignalLevels, 0
+     3790183514 3ddef05e      SingleThreadRec > lh_FxGetSignalLevels
+     3790189493 3ddef05e      SingleThreadRec < lh_FxGetSignalLevels, 0
+     3822520736 3ddef05e      SingleThreadRec > lh_FxGetSignalLevels
+     3822541590 3ddef05e      SingleThreadRec < lh_FxGetSignalLevels, 0
+     3853917135 3ddef05e      SingleThreadRec > lh_FxGetSignalLevels
+     3853953666 3ddef05e      SingleThreadRec < lh_FxGetSignalLevels, 0
+     3879624211 3ddef05e      SingleThreadRec > lh_FxGetAbnormCondition
+     3879642586 3ddef05e      SingleThreadRec < lh_FxGetAbnormCondition, 0
+     3880701044 3ddef05e      SingleThreadRec > lh_FxGetSignalLevels
+     3880721096 3ddef05e      SingleThreadRec < lh_FxGetSignalLevels, 0
+     3913275391 3ddef05e      SingleThreadRec > lh_FxGetSignalLevels
+     3913314329 3ddef05e      SingleThreadRec < lh_FxGetSignalLevels, 0
+     3939375206 3ddef05e      SingleThreadRec > lh_FxGetSignalLevels
+     3939411227 3ddef05e      SingleThreadRec < lh_FxGetSignalLevels, 0
+     3943378477 3ddef05e      SingleThreadRec > lh_FxGetSignalLevels
+     3943422592 3ddef05e  

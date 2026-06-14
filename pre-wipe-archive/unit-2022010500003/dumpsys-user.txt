@@ -1,0 +1,46 @@
+Users:
+  UserInfo{0:null:13} serialNo=0
+    State: RUNNING_UNLOCKED
+    Created: <unknown>
+    Last logged in: +3m31s831ms ago
+    Last logged in fingerprint: rockchip/H7R/H7R:8.1.0/OPM6.171019.030.E1/203133:user/release-keys
+    Has profile owner: false
+    Restrictions:
+      no_add_user
+    Device policy global restrictions:
+      no_fun
+      no_sms
+      no_usb_file_transfer
+      no_safe_boot
+      no_config_tethering
+    Device policy local restrictions:
+      no_uninstall_apps
+      no_add_managed_profile
+      no_install_unknown_sources
+      no_debugging_features
+    Effective restrictions:
+      no_add_user
+      no_fun
+      no_sms
+      no_usb_file_transfer
+      no_uninstall_apps
+      no_add_managed_profile
+      no_install_unknown_sources
+      no_safe_boot
+      no_config_tethering
+      no_debugging_features
+
+  Device owner id:0
+
+  Guest restrictions:
+    no_sms
+    no_install_unknown_sources
+    no_config_wifi
+    no_outgoing_calls
+
+  Device managed: true
+  Started users state: {0=3}
+
+  Max users: 8
+  Supports switchable users: true
+  All guests ephemeral: false

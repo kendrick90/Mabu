@@ -1,0 +1,7 @@
+CAMERA: allow; time=-3419d16h39m4s201ms ago; duration=+49s5ms
+RECORD_AUDIO: allow; time=-3419d16h37m57s891ms ago
+AUDIO_MEDIA_VOLUME: allow; time=-3419d16h38m11s297ms ago
+TOAST_WINDOW: allow; time=-3419d16h39m38s264ms ago; duration=+2s521ms
+OP_READ_PHONE_STATE: allow; time=-3419d16h39m32s922ms ago
+READ_EXTERNAL_STORAGE: allow; time=-3419d16h39m35s705ms ago
+WRITE_EXTERNAL_STORAGE: allow; time=-3419d16h39m35s705ms ago
