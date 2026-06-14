@@ -1,0 +1,24 @@
+{
+  "_comment": "Single source of truth for Mabu's LLMs. run-llm.ps1 reads file+template to launch llama-server; pipecat_bot.py reads stop (keyed by the LLM_MODEL name) so the right stop token travels with each model instead of being hard-coded. 'file' is resolved relative to pc-brain/models/ unless it's an absolute path. 'template': '' means trust the GGUF's embedded template (--jinja); a name like 'chatml' forces a built-in template.",
+
+  "rocinante": {
+    "file": "Rocinante-12B-v1.1-Q4_K_M.gguf",
+    "template": "chatml",
+    "stop": ["<|im_end|>"],
+    "note": "TheDrummer Mistral-Nemo 12B, decensored RP. Its embedded template is a non-renderable name ('mistral-v7-tekken') so we force ChatML; Nemo's tokenizer then leaks a literal <|im_end|>, hence the stop."
+  },
+
+  "qwen": {
+    "file": "%USERPROFILE%\\Tools\\downloads\\qwen2.5-7b-q4_k_m.gguf",
+    "template": "",
+    "stop": ["<|im_end|>"],
+    "note": "Qwen 2.5 7B Instruct. Embedded template is good (ChatML family) -> --jinja."
+  },
+
+  "stheno": {
+    "file": "L3-8B-Stheno-v3.2-Q4_K_M.gguf",
+    "template": "",
+    "stop": ["<|eot_id|>"],
+    "note": "Sao10K L3-8B-Stheno-v3.2 -- decensored RP/character 8B (Llama-3). ~5GB vs Rocinante's 7.5GB, frees VRAM. Llama-3 template; <|eot_id|> is a NATIVE special token so it stops cleanly via --jinja (no leak like Rocinante)."
+  }
+}

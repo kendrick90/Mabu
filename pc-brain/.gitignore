@@ -1,0 +1,22 @@
+# Third-party clone (re-created by setup-whisperlive.ps1) and its venv.
+# We track only our own setup/run scripts + README, not upstream WhisperLive
+# or the multi-GB venv.
+whisperlive/
+*.log
+bubble_*.png
+chatterbox/
+pipecat/
+*.log.err
+
+# Local LLM weights (multi-GB GGUFs) live in the repo now, but are not tracked.
+models/
+
+# Persona definitions + per-persona conversation memory (runtime state).
+personas/
+
+# Cloned/reference voice clips for Chatterbox (runtime).
+voices/
+voice.wav
+
+# Benchmark audio clips (bench.py).
+bench_clips/
