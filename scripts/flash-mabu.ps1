@@ -62,9 +62,10 @@ function Find-AdbDevice {
                 if ($ok -match '^ok') { return "${PreferIp}:5555" }
             }
         }
-        # then any usb device
-        $usb = & $ADB devices 2>&1 | Where-Object { $_ -match '^\d+\s+device$' }
-        if ($usb) {
+        # then any usb device. Force array so single-line result doesn't get
+        # treated as a string (where [0] is the first character, not the row).
+        $usb = @(& $ADB devices 2>&1 | Where-Object { $_ -match '^\d+\s+device$' })
+        if ($usb.Count -gt 0) {
             $serial = ($usb[0] -split '\s+')[0]
             $ok = & $ADB -s $serial shell echo ok 2>&1
             if ($ok -match '^ok') { return $serial }
