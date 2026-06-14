@@ -15,45 +15,31 @@ taps on the touch UI, no PowerShell prompts, no WiFi setup mid-flow.
 | Press Enter in PowerShell prompts | Read-Host calls | **Remove** — `Read-Host` crashes in non-interactive mode anyway |
 | Calibrate motors via factorymode wizard | Per-unit mechanical zero offsets | **Defer** — keep as a separate post-flash step, ~3 minutes user time |
 
-## Headless Magisk via `boot_patch.sh`
+## Magisk is OUT of the V4 plan
 
-Magisk Manager's app-side "Select and Patch a File" UI is a thin wrapper
-around `assets/boot_patch.sh` inside the APK. The same script can be
-invoked directly via adb shell — no touch UI needed.
+Tested empirically on unit 6 on 2026-06-13. Both **Magisk v30.7 and
+v27.0** produce repacked boot images that boot the kernel but then
+hang at the recovery "no command" screen. Documented in
+`magisk-incompatibility.md`. The 3.7 MB SECOND section in the Mabu
+boot.img is the most likely structural culprit; Magisk's repack
+doesn't anticipate it.
 
-Sketch:
-```powershell
-# Unzip Magisk binaries to host once
-unzip apks/Magisk.apk lib/armeabi-v7a/* assets/* -d magisk-bins/
+V4 therefore does NOT root the device. We don't need uid=0 for the
+project's mission anyway:
 
-# For each unit:
-adb push magisk-bins/lib/armeabi-v7a/* /data/local/tmp/
-adb push magisk-bins/assets/* /data/local/tmp/
-adb push firmware/scratch/boot-<serial>.img /data/local/tmp/boot.img
+- `/dev/ttyS1` (motor UART) is `crwxrwxrwx` -- shell or any app can
+  open it directly.
+- `/system` is mutable via Loader-side sector writes (the patch
+  mechanism we already use).
+- Autostart-on-boot lives in app `BOOT_COMPLETED` receivers or in
+  Loader-side `/system/etc/init/*.rc` service files we add.
 
-# Magisk's .so files double as ELF binaries -- need to rename
-adb shell 'cd /data/local/tmp && \
-    for f in libmagisk32.so libmagiskboot.so libmagiskinit.so libmagiskpolicy.so libbusybox.so; do \
-        n=$(echo $f | sed "s/^lib//;s/\.so$//"); \
-        cp $f $n; chmod 755 $n; \
-    done && \
-    sh boot_patch.sh boot.img'
-
-adb pull /data/local/tmp/new-boot.img firmware/scratch/boot-magisk-<serial>.img
-```
-
-Then write `new-boot.img` to the boot partition via Loader. Same as
-manual flow, no human touch.
-
-**Risk**: prior hand-rolled boot.img patches were rejected by u-boot
-(unbootable). Magisk's patcher preserves AVB and SHA-1 structure
-properly, but this is genuinely unproven on RK3288 Android 8.1.
-First V4 trial should keep the original boot.img backed up and
-verify boot succeeds before claiming victory.
-
-**Risk**: Magisk v30.7 may require Android 9+. If it does, downgrade
-to Magisk v27.x which supported back through Android 6. Need to confirm
-empirically.
+If a future task genuinely needs uid=0 (e.g., to instrument
+system_server, modify iptables, or read another app's /data/data),
+the path is a **Loader-side static-su install**: drop a setuid binary
+at `/system/xbin/su` and an `init.rc` service that chowns/chmods it
+on boot. This bypasses Magisk entirely and uses tooling we already
+trust. ~30 min to build; not in scope unless a need appears.
 
 ## USB → WiFi failover
 
@@ -91,37 +77,32 @@ Already have `-ResumeFrom <phase>` in v3. V4 keeps this. Plus:
 ```
 0. (user) vol-up while plugging in power
 1. catch Loader (polling)
-2. liberate Loader-side: ALL patches (parameter, adbd, EOCDs, init zeros)
+2. parameter + adbd patches Loader-side
 3. rd to Android
 4. wait for ADB (USB or WiFi self-heal)
 5. capture-shell: APKs, sdcard, dumpsys
-6. magisk-headless: push boot.img + magisk bins, run boot_patch.sh, pull new-boot.img
-7. reboot loader (via adb)
-8. write new-boot.img to boot partition
-9. rd to Android
-10. wait for ADB; verify `su -c id` succeeds
-11. capture-root: /data/data/com.catalia.factorymode, /data/system
-12. reboot loader
-13. /data wipe 96 MB
-14. rd, wait for ADB (USB ok post-wipe per all units to date)
-15. install F-Droid, Lawnchair, factorymode, OpenCV Manager
-16. push animation CSVs + nuance + sound.raw
-17. (optional) restore-adb-auth.ps1 for ship-mode
-18. done — print "Run motor calibration on factorymode Trouble Shooting/Motor Debug"
+6. reboot loader (via adb)
+7. destructive patches: EOCD nukes + init zeros
+8. /data wipe 96 MB
+9. rd, wait for ADB
+10. install F-Droid, Lawnchair, factorymode, OpenCV Manager
+11. push animation CSVs + nuance + sound.raw
+12. (optional) restore-adb-auth.ps1 for ship-mode
+13. done — print "Run motor calibration on factorymode Trouble Shooting/Motor Debug"
 ```
 
-Total expected time: ~8 minutes unattended after initial vol-up.
+Total expected time: ~5 minutes unattended after initial vol-up
+(shorter than originally planned now that Magisk + the second Loader
+round-trip are out).
 
 ## Validation plan
 
 Don't promote v4 until it runs cleanly on TWO consecutive fresh Esper
 Mabus end-to-end with zero manual intervention (except vol-up). Keep v3
-and v2 in tree until then; v2 stays the safe default.
+in tree as the proven default.
 
 ## Files we'd add for v4
 
-- `scripts/flash-mabu-v4.ps1` — orchestrator
-- `scripts/magisk-headless.ps1` — boot_patch.sh via adb shell
-- `tools/magisk-bins/` — extracted binaries from Magisk.apk (one-time prep,
-  committed since they're small)
+- `scripts/flash-mabu-v4.ps1` — orchestrator (with WiFi self-heal,
+  phase markers, no Read-Host)
 - `scripts/find-device-v4.ps1` (or inline function) — USB/WiFi self-heal

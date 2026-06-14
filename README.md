@@ -13,10 +13,21 @@ the option to drive the robot motors via the original factory-test app.
 
 ```powershell
 # Connect via internal USB harness, power on, catch Loader (PID 0x320A)
-.\scripts\flash-mabu.ps1 -WipeData -RestoreMabu
+.\scripts\flash-mabu-v3.ps1
 # WiFi setup happens on the touch UI when prompted
-# Done. Lawnchair + F-Droid + Mabu Factory Mode installed.
+# Done. Lawnchair + F-Droid + Mabu Factory Mode installed,
+# pre-wipe-archive/unit-<serial>/ has APKs + sdcard + dumpsys.
 ```
+
+`flash-mabu-v3.ps1` is the canonical protocol: it does everything
+`flash-mabu.ps1` does plus a pre-wipe capture pass (preserves per-unit
+APKs, sdcard contents, and runtime state before the /data reformat).
+Magisk root is **not attempted by default** -- both Magisk v30.7 and
+v27.0 produce boot images that hang at recovery "no command" on this
+RK3288 H7R boot.img layout. See [`notes/magisk-incompatibility.md`](notes/magisk-incompatibility.md).
+We don't need root for any actual project capability -- `/dev/ttyS1`
+is `crwxrwxrwx` (shell/app can drive motors directly), and Loader-side
+/system writes cover anything else.
 
 That's the whole assembly-line flow. The rest of this README is what's
 inside the box.
@@ -114,7 +125,7 @@ by /data reformat.
 | 3 | 2022010501476 | clear | clean | works | 10.0.0.252 | ✅ restored | Working in body; antenna seating was finicky during reassembly but final reads were the best of the session (WiFi −62 dBm, LTE RSRP −97 dBm). SIM present |
 | 4 | 2022010501557 | clear | clean | works | 10.0.0.69 | ✅ restored | **Primary unit going forward.** Cleanest of the fleet, fully provisioned via the unified script, deploy-ready |
 | 5 | 2022010501537 | clear | clean | works | 10.0.0.117 | dev-mode | Flashed via the polling Loader catch path. OpenCV Manager + factorymode + animations installed |
-| 6 | 2022010500003 | clear | clean | works | TBD | dev-mode | **First V3 run.** Pre-wipe capture preserved 4 APKs + 17.8 MB /sdcard including new `com.catalia.mabu.softkeyboard.apk` not seen on any prior unit. Magisk root skipped (USB wedged before install) |
+| 6 | 2022010500003 | clear | clean | works | TBD | dev-mode | **First V3 run.** Pre-wipe capture preserved 4 APKs + 17.8 MB /sdcard including new `com.catalia.mabu.softkeyboard.apk` not seen on any prior unit. **Magisk attempts (v30.7 and v27.0) both produced boot images that hang at recovery "no command"** -- restored original boot.img via Loader. Confirmed Magisk-on-this-hardware is a dead end; documented in [`notes/magisk-incompatibility.md`](notes/magisk-incompatibility.md) |
 
 ## Caveats / known limits
 
