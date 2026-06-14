@@ -79,19 +79,29 @@ Section 'Loader detection'
 if (Test-Loader) {
     Ok 'Loader already present.'
 } else {
-    Info 'Loader not seen. Attempting to enter via adb reboot loader.'
-    $dev = Find-AdbDevice -PreferIp $WifiIp -TimeoutSec 30
-    if (-not $dev) {
-        Fail 'No adb device and no Loader. Power-cycle the tablet to catch Loader, then re-run.'
-        exit 1
+    # Try the easy path first: device is in Android with WiFi adb. If so,
+    # `adb shell reboot loader` puts it in Loader cleanly.
+    Info 'Loader not present. Checking for an adb device to reboot from...'
+    $dev = Find-AdbDevice -PreferIp $WifiIp -TimeoutSec 5
+    if ($dev) {
+        Info "Found adb device: $dev. Rebooting into Loader."
+        & $ADB -s $dev shell reboot loader 2>&1 | Out-Null
+    } else {
+        # Fresh / Esper-locked unit. No adb. User has to power-cycle so
+        # u-boot exposes Loader during the ~10s window early in boot.
+        # Host just polls rkdeveloptool ld continuously and catches whenever
+        # it appears -- no human timing required.
+        Warn 'No adb device found.'
+        Warn 'POWER-CYCLE the tablet now (unplug & replug power, or hold power off then on).'
+        Warn 'Loader appears for ~10s during early u-boot; this script will grab it.'
     }
-    Info "Found adb device: $dev. Rebooting into Loader."
-    & $ADB -s $dev shell reboot loader 2>&1 | Out-Null
-    for ($i = 0; $i -lt 30; $i++) {
-        Start-Sleep -Seconds 1
-        if (Test-Loader) { Ok "Loader caught after ${i}s."; break }
+    Info 'Polling for Loader (up to 90s)...'
+    $found = $false
+    for ($i = 0; $i -lt 300; $i++) {
+        if (Test-Loader) { Ok "Loader caught after $([math]::Round($i*0.3,1))s."; $found = $true; break }
+        Start-Sleep -Milliseconds 300
     }
-    if (-not (Test-Loader)) { Fail 'Loader did not appear in 30s.'; exit 1 }
+    if (-not $found) { Fail 'Loader did not appear in 90s. Try power-cycling again.'; exit 1 }
 }
 
 # --- Phase 2: Apply patches ---
