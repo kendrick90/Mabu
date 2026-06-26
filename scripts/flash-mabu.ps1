@@ -29,7 +29,7 @@ param(
     [int]    $WipeMB = 96,       # 96 MB matches v3 procedure (preserves Dev Options on this build)
     [switch] $RestoreMabu,       # install factorymode + push animations/voice assets
     [switch] $SkipApps,          # only do Loader-side patches; no F-Droid/Lawnchair
-    [string] $WifiIp,            # if known; else we'll prompt
+    [string] $WifiIp = '192.168.0.18',  # static lease; override if IP changes
     [string] $UsbSerial,         # if known; else autodetect
     [string] $LawnchairApk = 'apks/Lawnchair.apk',
     [string] $FDroidApk    = 'apks/F-Droid.apk',
